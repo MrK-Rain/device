@@ -55,15 +55,6 @@ because it deletes its own `T-*` fixture rows and must never touch production.
 
 ## Documents
 
-| File | What it is for |
-|---|---|
-| `DEPLOYMENT-READINESS.md` | Everything still needed before go-live. 40 items with severity and owner. |
-| `ENGINEERING-RECORD.md` | Why the system is shaped this way, every defect testing found, and the measurements. |
-| `SECURITY.md` | Controls implemented, and the ones deliberately not. |
-| `api/README.md` | The authorisation model and the endpoint list. |
-
-## Documents
-
 | File | What it is |
 |---|---|
 | `DEPLOYMENT-READINESS.md` | 40 outstanding items with severity and owner, before go-live |
