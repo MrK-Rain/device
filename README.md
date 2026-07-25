@@ -62,6 +62,16 @@ because it deletes its own `T-*` fixture rows and must never touch production.
 | `SECURITY.md` | Controls implemented, and the ones deliberately not. |
 | `api/README.md` | The authorisation model and the endpoint list. |
 
+## Documents
+
+| File | What it is |
+|---|---|
+| `DEPLOYMENT-READINESS.md` | 40 outstanding items with severity and owner, before go-live |
+| `docs/DECISIONS.md` | Why the system is built this way, including what was deliberately not done |
+| `docs/TEST-EVIDENCE.md` | What was measured, what testing caught, what is still unverified |
+| `SECURITY.md` | Controls implemented, controls explicitly not implemented |
+| `api/README.md` | The authorisation model and endpoint reference |
+
 ## Layout
 
 ```
@@ -70,10 +80,16 @@ api/
   src/auth.js                   OIDC verification, group to role mapping
   src/routes/                   devices, notes, meta
   test/api.test.js              35 integration tests, no mocks
+docs/
+  DECISIONS.md                  architecture decision record
+  TEST-EVIDENCE.md              measurements and defects caught
 db/
   migrate.sh                    migration runner
   migrations/001_*.sql          baseline schema — append-only, never edited
-  tests/001_control_tests.sql   50 assertions; exits non-zero on any failure
+  migrations/002_*.sql          note full-text search
+  migrations/003_*.sql          NOINHERIT application role
+  migrations/004_*.sql          audit partition safety net
+  tests/001_control_tests.sql   61 assertions; exits non-zero on any failure
 web/
   src/device-index.jsx          the prototype UI
   src/storage-adapter.js        supplies window.storage outside the sandbox
