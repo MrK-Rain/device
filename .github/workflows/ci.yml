@@ -1,0 +1,161 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default. Any job needing more must ask for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  The gate that matters. Applies the migrations to a throwaway Postgres
+  #  and asserts every stated control actually enforces. The control suite
+  #  exits non-zero on any failure, so a regression cannot merge.
+  # ═══════════════════════════════════════════════════════════════════════
+  database:
+    name: schema and controls
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: registry_ci
+          # Production runs with checksums on and it cannot be changed after
+          # initdb, so CI matches. A checksum failure here is a real signal.
+          POSTGRES_INITDB_ARGS: "--data-checksums"
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d registry_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: ci
+      PGPASSWORD: ci
+      PGDATABASE: registry_ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql 16
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt \
+            $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16
+          psql --version
+
+      - name: Apply migrations
+        run: ./db/migrate.sh
+
+      - name: Re-run must be a no-op
+        run: |
+          out=$(./db/migrate.sh)
+          echo "$out"
+          echo "$out" | grep -q "nothing to do" \
+            || { echo "::error::migrations are not idempotent"; exit 1; }
+
+      - name: Checksums must verify
+        run: ./db/migrate.sh --verify
+
+      - name: Control tests
+        env:
+          PGOPTIONS: "-c registry.test_mode=on"
+        run: psql -v ON_ERROR_STOP=1 -f db/tests/001_control_tests.sql
+
+      - name: Control suite must be able to fail the build
+        env:
+          PGOPTIONS: "-c registry.test_mode=on"
+        run: |
+          # A test harness that cannot report failure is decoration. Prove it
+          # by breaking a control and checking the suite catches it.
+          psql -v ON_ERROR_STOP=1 -q -c \
+            "ALTER TABLE registry.devices DROP CONSTRAINT devices_imei_fmt"
+          if psql -v ON_ERROR_STOP=1 -q -f db/tests/001_control_tests.sql >/dev/null 2>&1; then
+            echo "::error::control suite passed with a constraint removed"
+            exit 1
+          fi
+          echo "confirmed: the suite fails when a control is removed"
+
+      - name: Control tests refuse to run unguarded
+        run: |
+          # Without registry.test_mode=on the suite must refuse, because it
+          # deletes its own fixture rows and must never touch production.
+          if psql -v ON_ERROR_STOP=1 -q -f db/tests/001_control_tests.sql >/dev/null 2>&1; then
+            echo "::error::control suite ran without the test_mode guard"
+            exit 1
+          fi
+          echo "confirmed: guard holds"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  An applied migration must never be edited. Two environments that
+  #  disagree about what schema they run is a change-control failure, and
+  #  the runner's checksum guard only catches it after the fact.
+  # ═══════════════════════════════════════════════════════════════════════
+  migration-immutability:
+    name: migrations are append-only
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: No modifications to existing migrations
+        run: |
+          base="origin/${{ github.base_ref }}"
+          git fetch --quiet origin "${{ github.base_ref }}"
+          changed=$(git diff --name-only --diff-filter=MD "$base"...HEAD -- db/migrations/ || true)
+          if [ -n "$changed" ]; then
+            echo "::error::these migrations already exist on ${{ github.base_ref }} and were modified or deleted:"
+            echo "$changed"
+            echo "Add a new numbered migration instead."
+            exit 1
+          fi
+          echo "no existing migrations were touched"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Frontend. Still the prototype; see README for its known ceiling.
+  # ═══════════════════════════════════════════════════════════════════════
+  web:
+    name: web build
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: web }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - name: Fail if a browser storage API crept into the bundle
+        run: |
+          # The prototype must not fall back to per-browser storage silently.
+          # The adapter is the only sanctioned path, and it is explicit.
+          if grep -rlE "localStorage|sessionStorage" src --include="*.jsx" ; then
+            echo "::error::browser storage referenced outside the adapter"
+            exit 1
+          fi
+          echo "clean"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 7

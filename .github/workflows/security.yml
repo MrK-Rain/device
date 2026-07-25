@@ -1,0 +1,72 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly disclosed CVE in a pinned dependency surfaces even
+    # when nobody has pushed. Monday 04:00 UTC.
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # full history: a secret in an old commit still leaked
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: web }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Audit
+        run: npm audit --audit-level=high
+
+  codeql:
+    name: static analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+
+  schema-hygiene:
+    name: schema hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Migrations must not contain credentials
+        run: |
+          hits=$(grep -nEi "(password|secret|api[_-]?key)[[:space:]]*(=|:)[[:space:]]*['\"][^'\"]+" db/migrations/*.sql || true)
+          if [ -n "$hits" ]; then
+            echo "::error::possible credential in a migration:"; echo "$hits"; exit 1
+          fi
+          echo "clean"
+      # Data minimisation is asserted in db/tests/001_control_tests.sql against
+      # the live catalog. A grep over migration text cannot distinguish a column
+      # definition from a plpgsql variable or a comment, and this one did both:
+      # it flagged a local variable and missed an added customer_name column.

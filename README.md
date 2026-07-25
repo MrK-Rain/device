@@ -1,0 +1,161 @@
+# Device Registry
+
+System of record for device-identifying data across the fleet: serial numbers,
+IMEIs, ICCIDs, device type, status, and a per-device repair log.
+
+**It holds no individual data.** There is no field for a name, contact,
+address or account, and free text is screened server-side before it is
+accepted. A control test asserts against the live catalog that no such column
+has been added.
+
+---
+
+## Status — read this before deploying anything
+
+| Component | State |
+|---|---|
+| Database schema (`db/migrations/`) | **Tested.** Applies clean, 50 control tests pass, benchmarked at 1M devices. |
+| Migration runner (`db/migrate.sh`) | **Tested.** Idempotent, advisory-locked, checksum-guarded. |
+| CI gates (`.github/workflows/`) | **Written, not yet run on GitHub.** Verified locally as far as a container allows. |
+| API layer | **Not built.** |
+| Frontend (`web/`) | **Prototype only.** Builds and lints, but stores data in the browser. See below. |
+| HA / backup / DR | **Not built.** Requirements documented below; no infrastructure code yet. |
+| Compliance mapping | **Blocked.** Needs rain's security policy documents. |
+
+The frontend is a working UI specification, not the platform. It holds every
+record in memory and writes to a single browser storage key with a ~5MB
+ceiling — around 25,000 devices at best, against a target of a million. Its
+personal-data screening also runs client-side, so anyone with dev tools walks
+past it. The server-side screening in the schema is the actual control.
+
+---
+
+## Quick start
+
+```bash
+# 1. Local database
+docker compose up -d
+
+# 2. Apply the schema
+export PGHOST=localhost PGUSER=dev PGPASSWORD=dev PGDATABASE=registry
+./db/migrate.sh
+
+# 3. Prove the controls hold
+PGOPTIONS="-c registry.test_mode=on" \
+  psql -v ON_ERROR_STOP=1 -f db/tests/001_control_tests.sql
+
+# 4. Frontend
+cd web && npm ci && npm run dev
+```
+
+The control suite refuses to run unless `registry.test_mode=on` is set,
+because it deletes its own `T-*` fixture rows and must never touch production.
+
+---
+
+## Layout
+
+```
+db/
+  migrate.sh                    migration runner
+  migrations/001_*.sql          baseline schema — append-only, never edited
+  tests/001_control_tests.sql   50 assertions; exits non-zero on any failure
+web/
+  src/device-index.jsx          the prototype UI
+  src/storage-adapter.js        supplies window.storage outside the sandbox
+.github/workflows/
+  ci.yml                        schema, controls, migration immutability, build
+  security.yml                  secrets, dependencies, CodeQL
+```
+
+---
+
+## How CI gates changes
+
+The interesting jobs are not the build:
+
+- **Control tests run against a real Postgres** with `--data-checksums`, the
+  same as production. Any regression in a stated control fails the build.
+- **The suite is proven able to fail.** CI drops a constraint, re-runs the
+  suite, and fails if it *passes* — a test harness that cannot report failure
+  is decoration.
+- **The guard is proven to hold.** CI runs the suite without
+  `registry.test_mode` and fails if it executes anyway.
+- **Migrations are append-only.** A PR that modifies a migration already on
+  `main` is rejected. Two environments disagreeing about what schema they run
+  is a change-control failure, and the runner's checksum guard only catches it
+  after the fact.
+- **Migrations must be idempotent.** CI applies them twice.
+
+## Branch protection to set on `main`
+
+CODEOWNERS and workflows do nothing on their own. In repository settings:
+
+- Require a pull request, at least one approval, and CODEOWNERS review
+- Require status checks: `schema and controls`, `migrations are append-only`,
+  `web build`, `secret scan`, `dependency audit`, `static analysis`
+- Dismiss stale approvals on new commits
+- Require branches to be up to date before merging
+- Require signed commits
+- Disallow force pushes and deletions
+- No bypass for administrators
+
+Replace the placeholder teams in `.github/CODEOWNERS` first — CODEOWNERS
+silently does nothing if a named team does not exist or lacks write access.
+
+---
+
+## Production requirements not yet built
+
+Zero data loss and continuous availability come from the cluster topology, not
+from the application. What the schema assumes:
+
+- **Synchronous replication** to a standby in a second availability zone.
+  Commit is not acknowledged until both hold the write, giving RPO 0. Add a
+  third node as witness — two nodes cannot arbitrate a failover without
+  risking split-brain.
+- **Continuous WAL archiving** to object storage for point-in-time recovery,
+  with restores tested monthly. An untested backup is not a backup.
+- **An asynchronous replica in a second region** for regional failure.
+- **`data_checksums = on`**, set at `initdb`; it cannot be enabled later
+  without rebuilding the cluster.
+- **ECC memory.** Checksums detect corruption; they do not repair it.
+- **Storage with power-loss protection.** Consumer SSDs acknowledge `fsync`
+  before the write is durable, which silently breaks the durability guarantee
+  everything above depends on.
+
+The full cluster settings this schema assumes are listed at the end of
+`db/migrations/001_device_registry.sql`.
+
+### On running this on a Raspberry Pi
+
+Capacity is not the obstacle — 1M devices measured at 1.1GB, and exact
+identifier lookups at 2–10ms. A Pi 5 with NVMe would serve a few hundred
+internal users comfortably.
+
+What rules it out for the system of record is the last three bullets above,
+plus: one node is no HA, there is no TPM to hold a disk-encryption key, and
+the box fits in a pocket. A Pi is a reasonable **depot-local read cache** that
+keeps working when the WAN drops and syncs back to the central cluster. The
+system of record stays central.
+
+---
+
+## Loading the initial fleet
+
+Use `COPY` into a staging table, not the paste box in the prototype. Drop the
+three `*_trgm` GIN indexes first, load, then rebuild them `CONCURRENTLY` —
+pushing a million rows through live GIN indexes is several times slower.
+
+Budget 3–4GB per million devices once notes and a year of audit history exist.
+
+---
+
+## Outstanding
+
+Compliance with rain's security policies **has not been assessed**, because
+the policy documents have not been provided. What is implemented reflects
+general good practice: least privilege by role, attributed writes, an
+append-only audit log, data minimisation asserted in CI. Whether that meets
+rain's standard is a separate question that needs the actual documents and a
+named reviewer.
