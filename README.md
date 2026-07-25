@@ -17,8 +17,8 @@ has been added.
 | Database schema (`db/migrations/`) | **Tested.** Applies clean, 50 control tests pass, benchmarked at 1M devices. |
 | Migration runner (`db/migrate.sh`) | **Tested.** Idempotent, advisory-locked, checksum-guarded. |
 | CI gates (`.github/workflows/`) | **Written, not yet run on GitHub.** Verified locally as far as a container allows. |
-| API layer | **Not built.** |
-| Frontend (`web/`) | **Prototype only.** Builds and lints, but stores data in the browser. See below. |
+| API layer (`api/`) | **Tested.** 35 integration tests against a real database, all roles exercised. Authorisation enforced by Postgres grants. |
+| Frontend (`web/`) | **Prototype only.** Builds and lints, but still talks to browser storage rather than the API. |
 | HA / backup / DR | **Not built.** Requirements documented below; no infrastructure code yet. |
 | Compliance mapping | **Blocked.** Needs rain's security policy documents. |
 
@@ -56,6 +56,11 @@ because it deletes its own `T-*` fixture rows and must never touch production.
 ## Layout
 
 ```
+api/
+  src/db.js                     one transaction per request, actor + role bound
+  src/auth.js                   OIDC verification, group to role mapping
+  src/routes/                   devices, notes, meta
+  test/api.test.js              35 integration tests, no mocks
 db/
   migrate.sh                    migration runner
   migrations/001_*.sql          baseline schema — append-only, never edited
@@ -86,6 +91,10 @@ The interesting jobs are not the build:
   is a change-control failure, and the runner's checksum guard only catches it
   after the fact.
 - **Migrations must be idempotent.** CI applies them twice.
+- **Dev auth cannot reach production.** CI boots the config with
+  `AUTH_MODE=dev NODE_ENV=production` and fails if the process starts.
+- **The app role must hold no privilege of its own.** CI connects as
+  `registry_app` and fails if it can read anything without assuming a role.
 
 ## Branch protection to set on `main`
 
@@ -232,6 +241,10 @@ Budget 3–4GB per million devices once notes and a year of audit history exist.
 ---
 
 ## Outstanding
+
+The frontend is not yet wired to the API — `web/src/storage-adapter.js` has
+the seam, and its `api` backend throws rather than pretending. That is the
+next piece of work, and it is small.
 
 Compliance with rain's security policies **has not been assessed**, because
 the policy documents have not been provided. What is implemented reflects

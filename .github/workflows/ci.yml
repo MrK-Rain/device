@@ -103,6 +103,89 @@ jobs:
           echo "confirmed: guard holds"
 
   # ═══════════════════════════════════════════════════════════════════════
+  #  API. Runs against a real database on purpose: authorisation is enforced
+  #  by Postgres grants, so a mocked database would test nothing but the mock.
+  # ═══════════════════════════════════════════════════════════════════════
+  api:
+    name: api
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: registry_ci
+          POSTGRES_INITDB_ARGS: "--data-checksums"
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d registry_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: ci
+      PGPASSWORD: ci
+      PGDATABASE: registry_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql 16
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt \
+            $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
+      - run: ./db/migrate.sh
+      - name: Give the app role a local password
+        # Never in a migration. Test-only, thrown away with the container.
+        run: psql -v ON_ERROR_STOP=1 -c "ALTER ROLE registry_app LOGIN PASSWORD 'citest'"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+        working-directory: api
+      - run: npm run lint
+        working-directory: api
+      - name: Integration tests
+        working-directory: api
+        env:
+          AUTH_MODE: dev
+          NODE_ENV: test
+          PGUSER: registry_app
+          PGPASSWORD: citest
+          PGSSLMODE: disable
+          TEST_ADMIN_DATABASE_URL: postgresql://ci:ci@localhost:5432/registry_ci
+        run: npm test
+      - name: Dev auth must be impossible in production
+        working-directory: api
+        env:
+          AUTH_MODE: dev
+          NODE_ENV: production
+        run: |
+          # Static-token auth reaching production is the worst single
+          # misconfiguration available here. Prove the process refuses to boot.
+          if node -e "import('./src/config.js')" 2>/dev/null; then
+            echo "::error::the API started with AUTH_MODE=dev in production"
+            exit 1
+          fi
+          echo "confirmed: refuses to start"
+      - name: App role must hold no privilege of its own
+        env:
+          PGUSER: registry_app
+          PGPASSWORD: citest
+        run: |
+          # NOINHERIT is what makes a forgotten SET LOCAL ROLE fail closed
+          # rather than run with the union of every role's privileges.
+          if psql -v ON_ERROR_STOP=1 -qc "SELECT count(*) FROM registry.devices" >/dev/null 2>&1; then
+            echo "::error::registry_app can read devices without assuming a role"
+            exit 1
+          fi
+          echo "confirmed: fails closed"
+
+  # ═══════════════════════════════════════════════════════════════════════
   #  An applied migration must never be edited. Two environments that
   #  disagree about what schema they run is a change-control failure, and
   #  the runner's checksum guard only catches it after the fact.

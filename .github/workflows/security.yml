@@ -26,15 +26,20 @@ jobs:
   dependencies:
     name: dependency audit
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [web, api]
     defaults:
-      run: { working-directory: web }
+      run:
+        working-directory: ${{ matrix.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: ${{ matrix.workspace }}/package-lock.json
       - run: npm ci
       - name: Audit
         run: npm audit --audit-level=high

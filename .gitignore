@@ -28,3 +28,6 @@ Thumbs.db
 # logs
 *.log
 npm-debug.log*
+
+# api
+api/dist/
