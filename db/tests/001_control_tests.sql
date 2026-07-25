@@ -257,6 +257,25 @@ SELECT pg_temp.expect('note search', 'the oversized trigram index on bodies is g
       SELECT 1 FROM pg_indexes WHERE schemaname='registry'
       AND indexname='device_notes_body_trgm'), 'trigram index on note bodies still present')$$, false);
 
+-- ── 6c. Audit partition headroom (migration 004) ───────────────────────────
+--  registry.audit() runs inside every read and write. If partitions run out,
+--  the whole register stops, so headroom is a control, not housekeeping.
+SELECT pg_temp.expect('audit partitions', 'at least two months of headroom remain',
+  $$SELECT pg_temp.assert(registry.audit_partition_headroom() >= 2,
+      'audit partitions are running out; schedule ensure_audit_partitions_ahead')$$, false);
+SELECT pg_temp.expect('audit partitions', 'the default partition is empty',
+  $$SELECT pg_temp.assert(
+      (SELECT count(*) FROM registry.audit_log_unpartitioned) = 0,
+      'rows have landed in the default partition, so rotation has stopped')$$, false);
+SELECT pg_temp.expect('audit partitions', 'creating partitions is idempotent',
+  $$SELECT pg_temp.assert(
+      (SELECT count(*) FROM registry.ensure_audit_partitions_ahead(3) WHERE created) = 0,
+      'a second call created partitions that should already exist')$$, false);
+SELECT pg_temp.note('audit partitions', 'health',
+  (SELECT 'headroom=' || months_headroom || 'mo partitions=' || monthly_partitions
+          || ' default_rows=' || rows_in_default
+     FROM registry.v_audit_partition_health));
+
 -- ── 7. Data minimisation ───────────────────────────────────────────────────
 --  The strongest guarantee that this register holds no individual data is
 --  that there is nowhere to put any. Asserted against the live catalog rather
