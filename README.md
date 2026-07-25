@@ -141,6 +141,61 @@ system of record stays central.
 
 ---
 
+## Measured capacity
+
+All figures from 1,000,000 devices and 200,000 notes on PostgreSQL 16, after
+`VACUUM FULL` so the numbers are not inflated by test-load bloat. The test box
+had **one vCPU**, so treat latencies as a pessimistic floor.
+
+| Operation | Measured |
+|---|---|
+| Exact serial lookup (barcode scan), warm | **0.15–0.45 ms** |
+| Exact IMEI / ICCID lookup, warm | **0.2–0.5 ms** |
+| Partial identifier fragment (trigram) | **4–9 ms** index work |
+| Filtered browse, first page of 50 | **~90 ms** |
+| Note search, uncommon term | **1.3 ms** |
+| Note search, term matching 25% of all notes | **~600 ms** — see below |
+| 4 concurrent clients, exact lookups, 1 vCPU | **98 tps, 41 ms average** |
+
+| Storage | Measured |
+|---|---|
+| Devices, 1M rows | 170 MB heap + 460 MB indexes = **630 MB** |
+| Notes | **270 bytes each** all-in, so ~540 MB at 2M notes |
+| Status history, 1M rows | ~150 MB |
+| Audit log | **untested**; grows fastest of anything here |
+
+Budget **3–4 GB per million devices** for the first year including notes and
+audit. Storage is not the constraint; audit growth is the thing to watch.
+
+Throughput is CPU-bound and the per-query work is small, so it scales with
+cores. A few hundred internal users doing occasional lookups is comfortably
+inside this.
+
+### Known limitations
+
+- **Note search on very common terms is slow.** `search_notes()` aggregates
+  every matching note before applying `LIMIT`, so a term appearing in a
+  quarter of all notes costs ~600 ms while an uncommon one costs 1.3 ms. The
+  fix is a bounded two-phase query returning the most recent N matches. Not
+  yet implemented, and the synthetic test data exaggerates it — only four
+  distinct note bodies exist, so every word is a common word.
+- **Deep pagination degrades.** `OFFSET 10000` measured 300–470 ms because
+  Postgres walks the skipped rows. Keyset pagination (`WHERE serial > $last`)
+  fixes it. Only matters if anyone actually pages that far, which for a
+  register of this kind is unlikely.
+- **Note ingestion runs at ~2,700 rows/second** with the screening trigger
+  active — six regex passes per row. Irrelevant for a technician writing one
+  note; it means a 2M-row historical import takes roughly 12 minutes.
+
+### Not yet tested
+
+- The audit log at scale, under sustained write load, with partition rotation
+- Concurrency beyond 4 clients, or on more than one core
+- Autovacuum behaviour and bloat over months of real churn
+- Failover, replication lag, or recovery from a WAL archive
+- Realistic data distribution — the synthetic set correlates device type with
+  status perfectly and has only four note bodies
+
 ## Loading the initial fleet
 
 Use `COPY` into a staging table, not the paste box in the prototype. Drop the

@@ -227,6 +227,36 @@ SELECT pg_temp.expect('search', 'a quote in the query does not break the dynamic
 SELECT pg_temp.expect('search', 'a backslash in the query does not break the dynamic SQL',
   $$SELECT count(*) FROM registry.search_devices('a\b' || chr(92))$$, false);
 
+-- ── 6b. Note search (migration 002) ────────────────────────────────────────
+-- Searches the note added in §5, which belongs to the live T-OK-001. The
+-- earlier 'antenna' note sits on the copy §3 soft-deletes, so it is correctly
+-- invisible here — an earlier version of this test asserted the opposite and
+-- failed, which is the function behaving properly.
+SELECT pg_temp.expect('note search', 'finds a device by a word in its history',
+  $$SELECT pg_temp.assert(EXISTS (
+      SELECT 1 FROM registry.search_notes('bench')
+      WHERE serial = 'T-OK-001'), 'word search did not find the live note')$$, false);
+SELECT pg_temp.expect('note search', 'stems, so a plural matches the singular',
+  $$SELECT pg_temp.assert(EXISTS (
+      SELECT 1 FROM registry.search_notes('faults')), 'stemming did not apply')$$, false);
+SELECT pg_temp.expect('note search', 'quoted phrase is accepted, not a syntax error',
+  $$SELECT count(*) FROM registry.search_notes('"bench check"')$$, false);
+SELECT pg_temp.expect('note search', 'punctuation-only input returns nothing rather than raising',
+  $$SELECT pg_temp.assert(NOT EXISTS (
+      SELECT 1 FROM registry.search_notes('&&& !!!')), 'garbage input was not handled')$$, false);
+SELECT pg_temp.expect('note search', 'empty terms do not scan the table',
+  $$SELECT pg_temp.assert(NOT EXISTS (
+      SELECT 1 FROM registry.search_notes('')), 'empty query returned rows')$$, false);
+SELECT pg_temp.expect('note search', 'soft-deleted devices excluded from note results',
+  $$SELECT pg_temp.assert(NOT EXISTS (
+      SELECT 1 FROM registry.search_notes('antenna') s
+      JOIN registry.devices d ON d.id = s.device_id WHERE d.deleted_at IS NOT NULL),
+      'a soft-deleted device appeared in note search')$$, false);
+SELECT pg_temp.expect('note search', 'the oversized trigram index on bodies is gone',
+  $$SELECT pg_temp.assert(NOT EXISTS (
+      SELECT 1 FROM pg_indexes WHERE schemaname='registry'
+      AND indexname='device_notes_body_trgm'), 'trigram index on note bodies still present')$$, false);
+
 -- ── 7. Data minimisation ───────────────────────────────────────────────────
 --  The strongest guarantee that this register holds no individual data is
 --  that there is nowhere to put any. Asserted against the live catalog rather
