@@ -127,7 +127,32 @@ from the application. What the schema assumes:
 The full cluster settings this schema assumes are listed at the end of
 `db/migrations/001_device_registry.sql`.
 
-### On running this on a Raspberry Pi
+### Raspberry Pi as a bench terminal — yes
+
+Distinct from the question below. A Pi running Chromium in kiosk mode against
+the central server is a sound and cheap workbench terminal, and the UI is
+built for it: the production bundle is 62 kB gzipped, and a USB barcode
+scanner presents as a keyboard, types the identifier and sends Enter. The
+search field now opens the record automatically on an unambiguous exact
+match, so a scan goes straight to the repair log with nothing to tap.
+
+Practical notes:
+
+- **Screen.** The layout goes two-pane at 920px. The official 7" panel is
+  800x480 and works, but 480px of height is cramped for the notes log. A
+  1024x600 panel or any HDMI monitor is materially better.
+- **Harden as a kiosk.** Read-only root filesystem — it stops SD card wear,
+  survives yanked power, and reboots to a known state.
+- **It holds a session, not data.** That makes the physical-security problem
+  much smaller than for a database host, but not zero. Short-lived sessions,
+  auto-lock on idle, and device certificates rather than shared credentials.
+- **Fleet patching is the real cost.** Twenty depots of Pis need a managed
+  image and unattended upgrades, or they quietly rot. Budget for that.
+- **Decide the offline behaviour.** A bench that loses the WAN cannot look
+  anything up. Either accept it, or run a local read replica at the depot —
+  which is the one place a Pi earns a database role.
+
+### On running the system of record on a Raspberry Pi
 
 Capacity is not the obstacle — 1M devices measured at 1.1GB, and exact
 identifier lookups at 2–10ms. A Pi 5 with NVMe would serve a few hundred

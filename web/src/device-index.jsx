@@ -715,8 +715,27 @@ export default function DeviceIndex() {
     return () => ro.disconnect();
   }, [loaded]);
 
-  // Starting a new search means looking for a different device.
-  useEffect(() => { setSelId(null); }, [q]);
+  // Read the current fleet without making the effect below depend on it —
+  // otherwise adding a note would re-run the effect and drop the selection.
+  const devicesRef = useRef(devices);
+  useEffect(() => { devicesRef.current = devices; }, [devices]);
+
+  // Starting a new search means looking for a different device. But if the
+  // query is a complete identifier matching exactly one record, open it.
+  // A barcode scanner types the whole serial and sends Enter; making the
+  // technician then tap the single result defeats the point of scanning.
+  useEffect(() => {
+    const raw = q.trim();
+    if (!raw) { setSelId(null); return; }
+    const alnum = upper(raw.replace(/[^a-z0-9]/gi, ""));
+    const dig = digits(raw);
+    const hits = devicesRef.current.filter(
+      (d) =>
+        (alnum.length >= 3 && upper(d.serial).replace(/[^A-Z0-9]/g, "") === alnum) ||
+        (dig.length >= 15 && (digits(d.imei) === dig || digits(d.iccid) === dig))
+    );
+    setSelId(hits.length === 1 ? hits[0].id : null);
+  }, [q]);
 
   useEffect(() => {
     let alive = true;
@@ -919,6 +938,15 @@ export default function DeviceIndex() {
           <input
             ref={searchRef} className="search-in mono" value={q} spellCheck={false}
             onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter opens the top result. Scanners send it automatically;
+              // for a partial fragment it saves reaching for the screen.
+              if (e.key === "Enter" && results.length > 0) {
+                e.preventDefault();
+                setSelId(results[0].id);
+                e.currentTarget.blur();   // dismiss the on-screen keyboard
+              }
+            }}
             placeholder="Scan or type a serial, IMEI or ICCID — partial is fine"
             aria-label="Search the device index"
           />
