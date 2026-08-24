@@ -140,7 +140,7 @@ jobs:
       - name: Give the app role a local password
         # Never in a migration. Test-only, thrown away with the container.
         run: psql -v ON_ERROR_STOP=1 -c "ALTER ROLE registry_app LOGIN PASSWORD 'citest'"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -220,7 +220,7 @@ jobs:
       run: { working-directory: web }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
