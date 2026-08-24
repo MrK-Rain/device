@@ -1,0 +1,209 @@
+# GitLab CI port of .github/workflows/ci.yml and security.yml.
+#
+# GitLab has no CodeQL equivalent outside Ultimate, so static analysis here
+# uses the free SAST template (semgrep-based). It is not the same engine as
+# CodeQL and coverage may differ — flagged in docs/DECISIONS.md, not silently
+# swapped in as an equivalent.
+#
+# Secret scanning stays a hand-rolled gitleaks job rather than GitLab's
+# built-in Secret Detection template: that template scans only the MR diff
+# by default, and CLAUDE.md's invariant #8 requires full-history scanning.
+# Swapping to the built-in template would quietly weaken that control.
+
+stages:
+  - test
+  - security
+
+variables:
+  POSTGRES_USER: ci
+  POSTGRES_PASSWORD: ci
+  POSTGRES_DB: registry_ci
+  POSTGRES_INITDB_ARGS: "--data-checksums"
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGUSER: ci
+  PGPASSWORD: ci
+  PGDATABASE: registry_ci
+
+.wait_for_postgres: &wait_for_postgres |
+  for i in $(seq 1 30); do
+    pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" && break
+    sleep 2
+  done
+
+.psql16: &install_psql16
+  - apt-get update -qq && apt-get install -y -qq wget gnupg lsb-release
+  - sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+  - wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+  - apt-get update -qq && apt-get install -y -qq postgresql-client-16
+
+# ═══════════════════════════════════════════════════════════════════════
+#  The gate that matters. Applies the migrations to a throwaway Postgres
+#  and asserts every stated control actually enforces. The control suite
+#  exits non-zero on any failure, so a regression cannot merge.
+# ═══════════════════════════════════════════════════════════════════════
+schema-and-controls:
+  stage: test
+  image: debian:bookworm-slim
+  services:
+    - postgres:16
+  before_script:
+    - *install_psql16
+    - *wait_for_postgres
+  script:
+    - ./db/migrate.sh
+    - |
+      out=$(./db/migrate.sh)
+      echo "$out"
+      echo "$out" | grep -q "nothing to do" || { echo "migrations are not idempotent"; exit 1; }
+    - ./db/migrate.sh --verify
+    - PGOPTIONS="-c registry.test_mode=on" psql -v ON_ERROR_STOP=1 -f db/tests/001_control_tests.sql
+    - |
+      # Prove the control suite can fail the build by breaking a control.
+      psql -v ON_ERROR_STOP=1 -q -c "ALTER TABLE registry.devices DROP CONSTRAINT devices_imei_fmt"
+      if PGOPTIONS="-c registry.test_mode=on" psql -v ON_ERROR_STOP=1 -q -f db/tests/001_control_tests.sql >/dev/null 2>&1; then
+        echo "control suite passed with a constraint removed"; exit 1
+      fi
+      echo "confirmed: the suite fails when a control is removed"
+    - |
+      # Without registry.test_mode=on the suite must refuse to run.
+      if psql -v ON_ERROR_STOP=1 -q -f db/tests/001_control_tests.sql >/dev/null 2>&1; then
+        echo "control suite ran without the test_mode guard"; exit 1
+      fi
+      echo "confirmed: guard holds"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  API. Runs against a real database on purpose: authorisation is enforced
+#  by Postgres grants, so a mocked database would test nothing but the mock.
+# ═══════════════════════════════════════════════════════════════════════
+api:
+  stage: test
+  image: node:20-bookworm
+  services:
+    - postgres:16
+  cache:
+    key:
+      files: [api/package-lock.json]
+    paths: [api/node_modules]
+  before_script:
+    - *install_psql16
+    - *wait_for_postgres
+    - ./db/migrate.sh
+    - psql -v ON_ERROR_STOP=1 -c "ALTER ROLE registry_app LOGIN PASSWORD 'citest'"
+    - cd api && npm ci
+  script:
+    - npm run lint
+    - |
+      export AUTH_MODE=dev NODE_ENV=test PGUSER=registry_app PGPASSWORD=citest PGSSLMODE=disable
+      export TEST_ADMIN_DATABASE_URL="postgresql://ci:ci@${PGHOST}:5432/registry_ci"
+      npm test
+    - |
+      # Static-token auth reaching production is the worst single
+      # misconfiguration available here. Prove the process refuses to boot.
+      if AUTH_MODE=dev NODE_ENV=production node -e "import('./src/config.js')" 2>/dev/null; then
+        echo "the API started with AUTH_MODE=dev in production"; exit 1
+      fi
+      echo "confirmed: refuses to start"
+    - |
+      # NOINHERIT is what makes a forgotten SET LOCAL ROLE fail closed
+      # rather than run with the union of every role's privileges.
+      if PGUSER=registry_app PGPASSWORD=citest psql -v ON_ERROR_STOP=1 -qc "SELECT count(*) FROM registry.devices" >/dev/null 2>&1; then
+        echo "registry_app can read devices without assuming a role"; exit 1
+      fi
+      echo "confirmed: fails closed"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  An applied migration must never be edited. Only meaningful to check on
+#  a merge request, where there is a target branch to diff against.
+# ═══════════════════════════════════════════════════════════════════════
+migration-immutability:
+  stage: test
+  image: alpine/git:latest
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - git fetch --quiet origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - |
+      changed=$(git diff --name-only --diff-filter=MD "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD" -- db/migrations/ || true)
+      if [ -n "$changed" ]; then
+        echo "these migrations already exist on ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME} and were modified or deleted:"
+        echo "$changed"
+        echo "Add a new numbered migration instead."
+        exit 1
+      fi
+      echo "no existing migrations were touched"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Frontend. Still the prototype; see README for its known ceiling.
+# ═══════════════════════════════════════════════════════════════════════
+web:
+  stage: test
+  image: node:20-bookworm
+  cache:
+    key:
+      files: [web/package-lock.json]
+    paths: [web/node_modules]
+  script:
+    - cd web
+    - npm ci
+    - npm run lint
+    - npm run build
+    - |
+      # The adapter is the only sanctioned storage path, and it is explicit.
+      if grep -rlE "localStorage|sessionStorage" src --include="*.jsx"; then
+        echo "browser storage referenced outside the adapter"; exit 1
+      fi
+      echo "clean"
+  artifacts:
+    paths: [web/dist]
+    expire_in: 7 days
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Secrets. Full history, every push and MR, plus weekly so a newly
+#  disclosed CVE in a pinned dependency surfaces without a push.
+# ═══════════════════════════════════════════════════════════════════════
+secret-scan:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - gitleaks detect --source . --redact -v
+
+dependency-audit:
+  stage: security
+  image: node:20-bookworm
+  parallel:
+    matrix:
+      - WORKSPACE: [web, api]
+  script:
+    - cd "$WORKSPACE"
+    - npm ci
+    - npm audit --audit-level=high
+
+schema-hygiene:
+  stage: security
+  image: debian:bookworm-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq grep
+  script:
+    - |
+      hits=$(grep -nEi "(password|secret|api[_-]?key)[[:space:]]*(=|:)[[:space:]]*['\"][^'\"]+" db/migrations/*.sql || true)
+      if [ -n "$hits" ]; then
+        echo "possible credential in a migration:"; echo "$hits"; exit 1
+      fi
+      echo "clean"
+      # Data minimisation is asserted in db/tests/001_control_tests.sql against
+      # the live catalog. A grep over migration text cannot distinguish a
+      # column definition from a plpgsql variable or a comment.
+
+# The GitHub workflow ran weekly (Monday 04:00 UTC) so a newly disclosed CVE
+# in a pinned dependency would surface without a push. A .gitlab-ci.yml
+# `rules:` block cannot create that schedule — it has to be added once in
+# the GitLab UI under CI/CD > Schedules, targeting this pipeline. Still open;
+# see the summary after this file is written.
+
+include:
+  - template: Jobs/SAST.gitlab-ci.yml

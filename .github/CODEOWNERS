@@ -14,3 +14,4 @@
 
 # CI defines the gates. Security reviews changes to the gates themselves.
 /.github/workflows/     @rain/PLACEHOLDER-security
+/.gitlab-ci.yml         @rain/PLACEHOLDER-security

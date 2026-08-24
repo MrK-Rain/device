@@ -285,3 +285,28 @@ CI.
 
 **A system marked "compliant" against a document nobody checked is more
 dangerous than one marked "pending review", because it gets signed off.**
+
+---
+
+## D21 — GitLab CI is a port, not a drop-in equivalent
+
+**Built:** `.gitlab-ci.yml`, alongside the existing `.github/workflows/`
+rather than replacing it, covering the same jobs: schema and controls, API
+integration tests, migration immutability, web build, secret scanning,
+dependency audit, and schema hygiene.
+
+**Two places it is not equivalent, on purpose:**
+
+- **Static analysis.** CodeQL is GitHub-native. GitLab's free-tier substitute
+  is the semgrep-based SAST template (`Jobs/SAST.gitlab-ci.yml`), included
+  here. It is a different engine with different coverage — treat a clean run
+  as "semgrep found nothing," not as "CodeQL-equivalent found nothing."
+- **Secret scanning.** GitLab ships a built-in Secret Detection template, but
+  it scans only the merge request diff by default. Invariant #8 requires
+  full-history scanning, so this uses a hand-rolled `gitleaks` job with
+  `GIT_DEPTH: "0"` instead — same tool as the GitHub Action, same guarantee.
+  Switching to the built-in template later would silently weaken this control.
+
+**Still open:** the weekly schedule (Monday 04:00 UTC in the GitHub workflow)
+has no equivalent in this file — GitLab schedules are created once in the UI
+under CI/CD > Schedules, not in YAML. Nobody has created it yet.
