@@ -288,7 +288,31 @@ dangerous than one marked "pending review", because it gets signed off.**
 
 ---
 
-## D21 — GitLab CI is a port, not a drop-in equivalent
+## D21 — Four blues, one job each
+
+**Built:** a rain-inspired blue/silver palette for `.app`, replacing the
+oxide-green brand system: `--blue` (header background, primary buttons,
+brand mark), `--blue-link` (hyperlinks and interactive icon accents),
+`--blue-focus` (the `:focus-visible` outline, nothing else), and
+`--blue-active` (selected/active chip and row indicators). Error and
+warning colors (`--rust`, `--amber`) are untouched.
+
+**Why one blue per job instead of one blue reused everywhere:** a single
+brand blue used for both links and focus rings makes focus indicators
+invisible against link-colored text, and reusing the header blue for
+"selected" states makes every active row look like part of the chrome.
+Each blue clears the WCAG AA floor for its own job — 4.5:1 for text,
+3:1 for the non-text focus ring — against this app's actual backgrounds.
+
+**Not sourced from rain.co.za's live CSS:** a fetch attempt returned only
+stripped markdown, no usable hex values, so these are independently
+chosen, AA-verified blues, not an extraction of the real brand. **If a
+real brand palette shows up later, swap these four values — don't add a
+fifth blue next to them.**
+
+---
+
+## D22 — GitLab CI is a port, not a drop-in equivalent
 
 **Built:** `.gitlab-ci.yml`, alongside the existing `.github/workflows/`
 rather than replacing it, covering the same jobs: schema and controls, API
@@ -310,3 +334,24 @@ dependency audit, and schema hygiene.
 **Still open:** the weekly schedule (Monday 04:00 UTC in the GitHub workflow)
 has no equivalent in this file — GitLab schedules are created once in the UI
 under CI/CD > Schedules, not in YAML. Nobody has created it yet.
+
+---
+
+## D23 — Seeded test devices are marked, guarded, and asserted absent
+
+**Built:** `db/seed/test_devices.sql` inserts 10 synthetic devices, every
+serial prefixed `TEST-`, covering all six device types and six statuses,
+with Luhn-valid IMEIs/ICCIDs except on extenders (which carry none, on
+purpose — a register where every row is fully populated never tests the
+"not recorded" path). It refuses to run without `registry.seed_mode=on`,
+and refuses if any non-`TEST-` device already exists. Migration 005 adds
+`registry.assert_no_test_data()`, which raises if any `TEST-` device is
+present — including soft-deleted ones, since a soft-deleted row still
+proves the database once held seed data.
+
+**Why a database-level assertion and not just "remember to clean up":**
+a synthetic IMEI with a correct check digit is indistinguishable from a
+real one by inspection. The protection has to be structural. **Call
+`registry.assert_no_test_data()` from the production deploy pipeline —
+a seed script that ran once against the wrong target does not announce
+itself.**
