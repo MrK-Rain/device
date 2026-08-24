@@ -123,6 +123,15 @@ export async function build(opts = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const app = await build();
 
+  if (config.isProd) {
+    const { runPreflight } = await import("../../deploy/preflight.mjs");
+    const result = runPreflight(process.env);
+    if (!result.ok) {
+      app.log.error({ failures: result.failures }, "preflight failed");
+      process.exit(78);
+    }
+  }
+
   const shutdown = async (signal) => {
     app.log.info({ signal }, "shutting down");
     // Stop accepting first, then drain the pool, so in-flight transactions
