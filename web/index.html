@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="same-origin" />
-    <!-- No third-party origins. Tighten further once the API host is known;
-         connect-src must then name it explicitly. -->
+    <!-- No third-party origins beyond the API itself. vite.config.js appends
+         VITE_API_BASE's origin to connect-src at build time when it's set. -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"

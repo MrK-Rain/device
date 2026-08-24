@@ -14,7 +14,7 @@ Owner column: **rain** means nobody outside your organisation can supply it.
 
 | # | Item | Sev | Owner | Notes |
 |---|---|---|---|---|
-| 1.1 | **Wire the frontend to the API** | P0 | eng | Today the UI writes to browser storage. There is no usable end-to-end system. The seam exists in `web/src/storage-adapter.js`; its `api` backend throws deliberately rather than pretending. Small job, but until it is done nobody can use anything. |
+| 1.1 | ~~Wire the frontend to the API~~ | P0 | eng | **Done.** `web/src/api-client.js` talks to the real endpoints; `device-index.jsx` searches, creates, edits, deletes and adds notes against the server when `VITE_STORAGE_BACKEND=api`, gated by the caller's role from `/api/meta`. Bulk import, per-note deletion and "clear everything" are disabled in this mode rather than faked, because the API has none of those (1.8, D4). Still open: there is no login UI, so it authenticates with a static bearer token from `VITE_API_TOKEN` — see 1.6 and `.env.example`. That token is a real interim gap, not a placeholder to ignore. |
 | 1.2 | **A database to deploy to** | P0 | rain + eng | No cluster exists. Hosting was asked and not yet answered, and it gates items 3.x entirely. |
 | 1.3 | **`initdb --data-checksums`** | P0 | DBA | Cannot be enabled later without rebuilding the cluster. Miss it at creation and you carry it forever. |
 | 1.4 | **Secret delivery** | P0 | rain + eng | The app reads `PGPASSWORD` from the environment. Nothing decides how it gets there. Prefer IAM or certificate auth over a password. |

@@ -1,14 +1,18 @@
 /**
  * The prototype UI was written against window.storage, a key-value store that
  * only exists inside the Claude artifact sandbox. This supplies the same
- * interface so the component runs unmodified outside it.
+ * interface so the component runs unmodified in the `local` case.
  *
  * Two backends:
  *   local  browser localStorage. Development only. Same ~5MB ceiling that
  *          makes the prototype unsuitable as the real platform.
- *   api    the server. Not implemented yet — it throws loudly rather than
- *          silently pretending, so nobody mistakes this for a working
- *          deployment.
+ *   api    the server. Talked to directly through api-client.js instead of
+ *          through this get/set/delete/list shape — the API is resource-
+ *          oriented and permission-scoped (search, per-device actions, an
+ *          append-only note log), and there is no "get everything" to hand
+ *          back as one blob (see D15/D18 in docs/DECISIONS.md). This module's
+ *          job for that backend is just to validate configuration and report
+ *          which mode is active; device-index.jsx branches on that report.
  *
  * Selected by VITE_STORAGE_BACKEND. Defaults to local.
  */
@@ -51,29 +55,19 @@ function localBackend() {
   };
 }
 
-function apiBackend(base) {
-  const notReady = (op) => {
-    throw new Error(
-      `storage.${op} is unavailable: the API layer has not been built yet. ` +
-        `Set VITE_STORAGE_BACKEND=local for development, or implement the ` +
-        `client against ${base}.`
-    );
-  };
-  return {
-    async get() { notReady("get"); },
-    async set() { notReady("set"); },
-    async delete() { notReady("delete"); },
-    async list() { notReady("list"); },
-  };
+export function currentBackend() {
+  return import.meta.env.VITE_STORAGE_BACKEND ?? "local";
 }
 
 export function installStorage() {
-  const backend = import.meta.env.VITE_STORAGE_BACKEND ?? "local";
-  const base = import.meta.env.VITE_API_BASE ?? "";
+  const backend = currentBackend();
 
   if (backend === "api") {
-    if (!base) throw new Error("VITE_STORAGE_BACKEND=api requires VITE_API_BASE");
-    window.storage = apiBackend(base);
+    if (!import.meta.env.VITE_API_BASE) {
+      throw new Error("VITE_STORAGE_BACKEND=api requires VITE_API_BASE");
+    }
+    // No window.storage here — device-index.jsx talks to api-client.js
+    // directly for this backend.
     return "api";
   }
 

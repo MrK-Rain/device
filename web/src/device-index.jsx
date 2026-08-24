@@ -3,6 +3,8 @@ import {
   Search, Plus, X, Check, AlertTriangle, Trash2, Download, Upload,
   Pencil, RotateCcw, ShieldOff, ChevronLeft, Loader2
 } from "lucide-react";
+import { currentBackend } from "./storage-adapter.js";
+import { devicesApi, notesApi, metaApi, ApiError } from "./api-client.js";
 
 /* ══════════════════════════════════════════════════════════════
    DEVICE INDEX — central device registry
@@ -11,9 +13,71 @@ import {
 
 const STORE_KEY = "device-registry-v1";
 
+// The api backend is resource-oriented, not a blob store: search is
+// server-side and paged, actions hit their own endpoint, and roles decide
+// what a given caller may do. Everything below that branches on IS_API talks
+// to devicesApi/notesApi directly instead of through the local `store` blob.
+const BACKEND = currentBackend();
+const IS_API = BACKEND === "api";
+const PAGE_SIZE = 50;
+
+// Mirrors the CAN table in api/src/config.js — duplicated only so a control
+// a caller's role cannot use is disabled instead of producing a 403. This is
+// not the boundary; Postgres and the API are. See api/README.md.
+const CAN_UI = {
+  registerDevice: ["warehouse", "manager"],
+  editIdentifiers: ["warehouse", "manager"],
+  changeStatus: ["technician", "warehouse", "manager"],
+  addNote: ["technician", "warehouse", "manager"],
+  softDelete: ["manager"],
+  export: ["manager"],
+};
+const roleCan = (cap, identity) => !IS_API || (!!identity && CAN_UI[cap].includes(identity.role));
+
+const noteKindToApi = (k) => (k === "obs" ? "observation" : "repair");
+const noteKindFromApi = (k) => (k === "observation" ? "obs" : "repair");
+const readableAdvisory = (f) => String(f).replace(/^advisory:\s*/, "");
+
+function describeApiError(e) {
+  if (e instanceof ApiError) {
+    if (e.status === 0) return e.message;
+    if (e.status === 401) return "Not authenticated — reload the page.";
+    return e.message || `The API rejected the request (${e.status}).`;
+  }
+  return e?.message || "Something went wrong talking to the API.";
+}
+
+// Server shape (see api/src/routes/devices.js `shape()`) to the shape this
+// component already renders everywhere.
+function fromApiDevice(d, notes) {
+  return {
+    id: d.id,
+    serial: d.serial,
+    type: d.deviceType,
+    imei: d.imei || "",
+    iccid: d.iccid || "",
+    status: d.status,
+    notes: notes ?? [],
+    noteCount: d.noteCount,
+    matchKind: d.matchKind,
+    addedAt: d.createdAt,
+    updatedAt: d.updatedAt,
+  };
+}
+
+function fromApiNote(n) {
+  return {
+    id: n.id,
+    body: n.body,
+    kind: noteKindFromApi(n.kind),
+    at: n.createdAt,
+    advisoryFindings: n.advisoryFindings,
+  };
+}
+
 const TYPES = [
   { id: "loop",       label: "Loop",       code: "LP" },
-  { id: "loop-phone", label: "Loop Phone", code: "LPH" },
+  { id: "loop_phone", label: "Loop Phone", code: "LPH" },
   { id: "101",        label: "101",        code: "101" },
   { id: "101a",       label: "101A",       code: "01A" },
   { id: "101pro",     label: "101 Pro",    code: "PRO" },
@@ -71,7 +135,10 @@ function groupDigits(d, kind) {
 
 /* ── personal-data screening ─────────────────────────────────── */
 /* The schema has no name / owner / contact field by design. These
-   patterns catch personal data typed into free text anyway.       */
+   patterns catch personal data typed into free text anyway. This is a
+   usability feature only — the screening trigger in the database is the
+   control (invariant 6), and the api backend below always defers to
+   whatever the server actually decides, including cases this misses. */
 
 const BLOCK_RULES = [
   { label: "an email address",     re: /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i },
@@ -124,7 +191,7 @@ function screen(text) {
   return { blocked, warned };
 }
 
-/* ── storage ─────────────────────────────────────────────────── */
+/* ── local storage (the `local` backend only) ───────────────────── */
 
 const store = {
   async read() {
@@ -249,7 +316,7 @@ function Field({ label, hint, children, error, warn }) {
    Add / edit record
    ══════════════════════════════════════════════════════════════ */
 
-function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
+function RecordForm({ initial, devices, onSave, onCancel, prefill, identity }) {
   const editing = !!initial;
   const pf = prefill || {};
   const [serial, setSerial] = useState(initial?.serial || pf.serial || "");
@@ -260,14 +327,24 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
   const [firstNote, setFirstNote] = useState("");
   const [noteKind, setNoteKind] = useState("obs");
   const [ack, setAck] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [advisoryFromServer, setAdvisoryFromServer] = useState(null);
+  const [createdId, setCreatedId] = useState(null);
   const first = useRef(null);
 
   useEffect(() => { first.current?.focus(); }, []);
 
+  // Under the api backend `devices` is only the current page of search
+  // results, not the whole fleet, so this catches the common case fast but
+  // is not authoritative — the server's own unique constraint is (D6/invariant 6).
   const others = devices.filter((d) => d.id !== initial?.id);
   const sn = upper(serial);
   const im = digits(imei);
   const ic = digits(iccid);
+
+  const identifiersLocked = editing && !roleCan("editIdentifiers", identity);
+  const serialLocked = IS_API && editing; // serials are immutable server-side
 
   const err = {};
   const warn = {};
@@ -298,12 +375,14 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
   if (scanned.blocked.length) {
     err.pii = `Remove ${scanned.blocked.map((b) => b.label).join(" and ")} — this index holds device data only.`;
   }
-  const needsAck = !err.pii && scanned.warned.length > 0;
+  const advisoryLabels = advisoryFromServer
+    ? advisoryFromServer.map(readableAdvisory)
+    : scanned.warned.map((w) => w.label);
+  const needsAck = !err.pii && (scanned.warned.length > 0 || !!advisoryFromServer);
 
-  const blocked = Object.keys(err).length > 0 || (needsAck && !ack);
+  const blocked = Object.keys(err).length > 0 || (needsAck && !ack) || busy;
 
-  const submit = () => {
-    if (blocked) return;
+  const submitLocal = () => {
     const now = new Date().toISOString();
     const notes = initial?.notes ? [...initial.notes] : [];
     if (firstNote.trim()) notes.push({ id: uid("n"), body: firstNote.trim(), kind: noteKind, at: now });
@@ -316,6 +395,60 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
     });
   };
 
+  const submitApi = async () => {
+    setBusy(true);
+    setFormError(null);
+    try {
+      let deviceId = initial?.id || createdId;
+      if (!deviceId) {
+        const created = await devicesApi.create({
+          serial: sn, deviceType: type, status,
+          imei: im || undefined, iccid: ic || undefined,
+        });
+        deviceId = created.id;
+        setCreatedId(deviceId);
+      } else if (editing) {
+        const patch = {};
+        if (!identifiersLocked) {
+          if (type !== initial.type) patch.deviceType = type;
+          if (im !== (initial.imei || "")) patch.imei = im || null;
+          if (ic !== (initial.iccid || "")) patch.iccid = ic || null;
+        }
+        if (status !== initial.status) patch.status = status;
+        if (Object.keys(patch).length) await devicesApi.patch(deviceId, patch);
+      }
+
+      if (!editing && firstNote.trim()) {
+        try {
+          await notesApi.add(deviceId, {
+            body: firstNote.trim(),
+            kind: noteKindToApi(noteKind),
+            acknowledgeAdvisory: !!advisoryFromServer && ack,
+          });
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 409 && e.data?.code === "advisory_review_required") {
+            // The device is already created — only the note is pending.
+            // Let them acknowledge and press save again.
+            setAdvisoryFromServer(e.data.findings || []);
+            setBusy(false);
+            return;
+          }
+          throw e;
+        }
+      }
+      onSave({ id: deviceId });
+    } catch (e) {
+      setFormError(describeApiError(e));
+      setBusy(false);
+    }
+  };
+
+  const submit = () => {
+    if (blocked) return;
+    if (IS_API) submitApi();
+    else submitLocal();
+  };
+
   return (
     <div className="sheet" role="dialog" aria-modal="true" aria-label={editing ? "Edit record" : "Add device"}>
       <div className="sheet-hd">
@@ -324,17 +457,22 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
       </div>
 
       <div className="sheet-bd">
-        <Field label="Serial number" hint="record key" error={err.serial}>
+        {formError && (
+          <div className="banner banner-bad"><ShieldOff size={14} /> {formError}</div>
+        )}
+
+        <Field label="Serial number" hint={serialLocked ? "immutable" : "record key"} error={err.serial}>
           <input
             ref={first} className="in mono" value={serial} spellCheck={false} autoCapitalize="characters"
             onChange={(e) => setSerial(e.target.value)} placeholder="e.g. LP24A00317"
+            readOnly={serialLocked}
           />
         </Field>
 
-        <Field label="Device type" error={err.type}>
+        <Field label="Device type" error={err.type} warn={identifiersLocked ? "your role cannot change this" : undefined}>
           <div className="chips">
             {TYPES.map((t) => (
-              <button key={t.id} type="button"
+              <button key={t.id} type="button" disabled={identifiersLocked}
                 className={`chip ${type === t.id ? "chip-on" : ""}`}
                 onClick={() => setType(t.id)}>{t.label}</button>
             ))}
@@ -343,19 +481,19 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
 
         <div className="row2">
           <Field label="IMEI" hint="15 digits, if fitted" error={err.imei} warn={warn.imei}>
-            <input className="in mono" value={imei} inputMode="numeric" spellCheck={false}
+            <input className="in mono" value={imei} inputMode="numeric" spellCheck={false} disabled={identifiersLocked}
               onChange={(e) => setImei(e.target.value)} placeholder="35 209900 176148 1" />
           </Field>
           <Field label="ICCID" hint="SIM, 18–20 digits" error={err.iccid} warn={warn.iccid}>
-            <input className="in mono" value={iccid} inputMode="numeric" spellCheck={false}
+            <input className="in mono" value={iccid} inputMode="numeric" spellCheck={false} disabled={identifiersLocked}
               onChange={(e) => setIccid(e.target.value)} placeholder="8944 5500 1234 5678 901" />
           </Field>
         </div>
 
-        <Field label="Status">
+        <Field label="Status" warn={IS_API && !roleCan("changeStatus", identity) ? "your role cannot change this" : undefined}>
           <div className="chips">
             {STATUSES.map((s) => (
-              <button key={s.id} type="button"
+              <button key={s.id} type="button" disabled={IS_API && !roleCan("changeStatus", identity)}
                 className={`chip ${status === s.id ? "chip-on" : ""}`}
                 onClick={() => setStatus(s.id)}>{s.label}</button>
             ))}
@@ -383,7 +521,7 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
           <div className="banner banner-warn">
             <AlertTriangle size={14} />
             <div>
-              <b>Possible personal data:</b> {scanned.warned.map((w) => w.label).join(", ")}.
+              <b>Possible personal data:</b> {advisoryLabels.join(", ")}.
               <label className="ack">
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
                 This text contains no personal data.
@@ -396,7 +534,7 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
       <div className="sheet-ft">
         <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
         <button className="btn btn-solid" disabled={blocked} onClick={submit}>
-          {editing ? "Save changes" : "Add to index"}
+          {busy ? "Saving…" : editing ? "Save changes" : "Add to index"}
         </button>
       </div>
     </div>
@@ -407,25 +545,48 @@ function RecordForm({ initial, devices, onSave, onCancel, prefill }) {
    Detail pane
    ══════════════════════════════════════════════════════════════ */
 
-function NoteComposer({ onAdd }) {
+function NoteComposer({ onAdd, disabled }) {
   const [body, setBody] = useState("");
   const [kind, setKind] = useState("repair");
   const [ack, setAck] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [serverAdvisory, setServerAdvisory] = useState(null);
   const sc = screen(body);
   const hard = sc.blocked.length > 0;
-  const soft = !hard && sc.warned.length > 0;
-  const can = body.trim().length > 1 && !hard && (!soft || ack);
+  const soft = !hard && (sc.warned.length > 0 || !!serverAdvisory);
+  const can = !disabled && body.trim().length > 1 && !hard && (!soft || ack) && !busy;
+  const advisoryLabels = serverAdvisory ? serverAdvisory.map(readableAdvisory) : sc.warned.map((w) => w.label);
+
+  const submit = async () => {
+    if (!can) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onAdd({ body: body.trim(), kind, acknowledgeAdvisory: soft && ack });
+      setBody(""); setAck(false); setServerAdvisory(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.data?.code === "advisory_review_required") {
+        setServerAdvisory(e.data.findings || []);
+      } else {
+        setError(describeApiError(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="composer">
       <div className="chips chips-tight">
         {NOTE_KINDS.map((k) => (
-          <button key={k.id} type="button" className={`chip chip-sm ${kind === k.id ? "chip-on" : ""}`}
+          <button key={k.id} type="button" disabled={disabled} className={`chip chip-sm ${kind === k.id ? "chip-on" : ""}`}
             onClick={() => setKind(k.id)}>{k.label}</button>
         ))}
       </div>
-      <textarea className="in ta" rows={3} value={body} onChange={(e) => setBody(e.target.value)}
-        placeholder="What was found, what was done, what it needs next." />
+      <textarea className="in ta" rows={3} value={body} disabled={disabled} onChange={(e) => setBody(e.target.value)}
+        placeholder={disabled ? "Your role cannot add notes." : "What was found, what was done, what it needs next."} />
+      {error && <div className="banner banner-bad"><ShieldOff size={14} /> {error}</div>}
       {hard && (
         <div className="banner banner-bad">
           <ShieldOff size={14} /> Remove {sc.blocked.map((b) => b.label).join(" and ")}. Notes hold device history only.
@@ -435,7 +596,7 @@ function NoteComposer({ onAdd }) {
         <div className="banner banner-warn">
           <AlertTriangle size={14} />
           <div>
-            Looks like it may contain {sc.warned.map((w) => w.label).join(", ")}.
+            Looks like it may contain {advisoryLabels.join(", ")}.
             <label className="ack">
               <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
               No personal data in this note.
@@ -444,16 +605,15 @@ function NoteComposer({ onAdd }) {
         </div>
       )}
       <div className="composer-ft">
-        <button className="btn btn-solid btn-sm" disabled={!can}
-          onClick={() => { onAdd({ id: uid("n"), body: body.trim(), kind, at: new Date().toISOString() }); setBody(""); setAck(false); }}>
-          Add note
+        <button className="btn btn-solid btn-sm" disabled={!can} onClick={submit}>
+          {busy ? "Adding…" : "Add note"}
         </button>
       </div>
     </div>
   );
 }
 
-function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onStatus, onBack }) {
+function Detail({ device, query, identity, onEdit, onDelete, onAddNote, onDeleteNote, onStatus, onBack }) {
   if (!device) {
     return (
       <div className="detail detail-idle">
@@ -465,6 +625,8 @@ function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onSt
       </div>
     );
   }
+  const canEdit = roleCan("changeStatus", identity) || roleCan("editIdentifiers", identity);
+  const canDelete = roleCan("softDelete", identity);
   const notes = [...(device.notes || [])].sort((a, b) => (a.at < b.at ? 1 : -1));
   return (
     <div className="detail">
@@ -472,8 +634,11 @@ function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onSt
         <button className="icon-btn only-narrow" onClick={onBack} aria-label="Back to results"><ChevronLeft size={18} /></button>
         <span className="lbl">Record</span>
         <div className="spacer" />
-        <button className="icon-btn" onClick={onEdit} aria-label="Edit record" title="Edit"><Pencil size={15} /></button>
-        <button className="icon-btn icon-bad" onClick={onDelete} aria-label="Delete record" title="Delete"><Trash2 size={15} /></button>
+        <button className="icon-btn" onClick={onEdit} disabled={!canEdit} aria-label="Edit record" title="Edit"><Pencil size={15} /></button>
+        <button className="icon-btn icon-bad" onClick={onDelete} disabled={!canDelete}
+          aria-label="Delete record" title={canDelete ? "Delete" : "Requires the manager role"}>
+          <Trash2 size={15} />
+        </button>
       </div>
 
       <div className="detail-bd">
@@ -491,7 +656,8 @@ function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onSt
           <div className="lbl">Status</div>
           <div className="chips">
             {STATUSES.map((s) => (
-              <button key={s.id} type="button" className={`chip ${device.status === s.id ? "chip-on" : ""}`}
+              <button key={s.id} type="button" disabled={!roleCan("changeStatus", identity)}
+                className={`chip ${device.status === s.id ? "chip-on" : ""}`}
                 onClick={() => onStatus(s.id)}>{s.label}</button>
             ))}
           </div>
@@ -523,7 +689,7 @@ function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onSt
 
         <div className="block">
           <div className="lbl">Notes for this device <em>{notes.length}</em></div>
-          <NoteComposer onAdd={onAddNote} />
+          <NoteComposer onAdd={onAddNote} disabled={!roleCan("addNote", identity)} />
           {notes.length === 0 && <p className="muted">No notes yet. Log the first repair or observation above.</p>}
           <ol className="log">
             {notes.map((n) => (
@@ -531,7 +697,7 @@ function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onSt
                 <div className="log-m">
                   <span className={`nk nk-${n.kind}`}>{(NOTE_KINDS.find((k) => k.id === n.kind) || {}).label || "Note"}</span>
                   <time className="log-t">{fmtDate(n.at)}</time>
-                  <button className="icon-btn icon-xs" onClick={() => onDeleteNote(n.id)} aria-label="Delete note"><X size={13} /></button>
+                  {!IS_API && <button className="icon-btn icon-xs" onClick={() => onDeleteNote(n.id)} aria-label="Delete note"><X size={13} /></button>}
                 </div>
                 <p className="log-b">{n.body}</p>
               </li>
@@ -544,12 +710,13 @@ function Detail({ device, query, onEdit, onDelete, onAddNote, onDeleteNote, onSt
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Import
+   Import (the `local` backend only — the API has no bulk path yet;
+   see DEPLOYMENT-READINESS 1.8)
    ══════════════════════════════════════════════════════════════ */
 
 const TYPE_ALIASES = {
   loop: "loop", lp: "loop",
-  loopphone: "loop-phone", lph: "loop-phone", phone: "loop-phone", looph: "loop-phone",
+  loopphone: "loop_phone", lph: "loop_phone", phone: "loop_phone", looph: "loop_phone",
   "101": "101", "101a": "101a", "101pro": "101pro", pro: "101pro", "101p": "101pro",
   extender: "extender", ext: "extender", repeater: "extender",
 };
@@ -693,6 +860,18 @@ export default function DeviceIndex() {
   const [savedAt, setSavedAt] = useState(null);
   const [storeless, setStoreless] = useState(false);
 
+  // api backend only
+  const [identity, setIdentity] = useState(null);
+  const [globalError, setGlobalError] = useState(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [selectedDetail, setSelectedDetail] = useState(null);
+  const [deleteReason, setDeleteReason] = useState("");
+  const bumpRefresh = () => setRefreshNonce((n) => n + 1);
+
   const [q, setQ] = useState("");
   const [fType, setFType] = useState("all");
   const [fStatus, setFStatus] = useState("all");
@@ -724,7 +903,10 @@ export default function DeviceIndex() {
   // query is a complete identifier matching exactly one record, open it.
   // A barcode scanner types the whole serial and sends Enter; making the
   // technician then tap the single result defeats the point of scanning.
+  // (api backend: this is handled inside the search effect below, using the
+  // server's own matchKind rather than a client-side re-scan.)
   useEffect(() => {
+    if (IS_API) return;
     const raw = q.trim();
     if (!raw) { setSelId(null); return; }
     const alnum = upper(raw.replace(/[^a-z0-9]/gi, ""));
@@ -737,9 +919,24 @@ export default function DeviceIndex() {
     setSelId(hits.length === 1 ? hits[0].id : null);
   }, [q]);
 
+  // Initial load: local reads the one storage blob; api fetches identity and
+  // lets the search effect below populate the list.
   useEffect(() => {
     let alive = true;
     (async () => {
+      if (IS_API) {
+        try {
+          const m = await metaApi.get();
+          if (!alive) return;
+          setIdentity(m.you);
+          setGlobalError(null);
+        } catch (e) {
+          if (!alive) return;
+          setGlobalError(describeApiError(e));
+        }
+        setLoaded(true);
+        return;
+      }
       if (!(typeof window !== "undefined" && window.storage)) setStoreless(true);
       const d = await store.read();
       if (!alive) return;
@@ -749,8 +946,83 @@ export default function DeviceIndex() {
     return () => { alive = false; };
   }, []);
 
+  // Server-side search, debounced. Replaces client-side filtering entirely
+  // for the api backend — the fleet is never held in memory (D15/D18).
   useEffect(() => {
-    if (!loaded || !dirty.current) return;
+    if (!IS_API || !loaded) return;
+    let alive = true;
+    setSearchLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await devicesApi.search({
+          q: q.trim() || undefined,
+          type: fType !== "all" ? fType : undefined,
+          status: fStatus !== "all" ? fStatus : undefined,
+          limit: PAGE_SIZE,
+          offset: 0,
+        });
+        if (!alive) return;
+        const mapped = res.results.map(fromApiDevice);
+        setDevices(mapped);
+        setHasMore(res.hasMore);
+        setOffset(mapped.length);
+        setSearchError(null);
+        if (q.trim() && mapped.length === 1 && mapped[0].matchKind === "exact") {
+          setSelId(mapped[0].id);
+        }
+      } catch (e) {
+        if (!alive) return;
+        setSearchError(describeApiError(e));
+      } finally {
+        if (alive) setSearchLoading(false);
+      }
+    }, 300);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q, fType, fStatus, loaded, refreshNonce]);
+
+  const loadMore = async () => {
+    setSearchLoading(true);
+    try {
+      const res = await devicesApi.search({
+        q: q.trim() || undefined,
+        type: fType !== "all" ? fType : undefined,
+        status: fStatus !== "all" ? fStatus : undefined,
+        limit: PAGE_SIZE,
+        offset,
+      });
+      const mapped = res.results.map(fromApiDevice);
+      setDevices((prev) => [...prev, ...mapped]);
+      setHasMore(res.hasMore);
+      setOffset(offset + mapped.length);
+    } catch (e) {
+      setSearchError(describeApiError(e));
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  // Fetch the full record + notes for whatever is selected. Search results
+  // carry summary fields only (noteCount, no note bodies).
+  useEffect(() => {
+    if (!IS_API) return;
+    if (!selId) { setSelectedDetail(null); return; }
+    let alive = true;
+    (async () => {
+      try {
+        const [dev, notesRes] = await Promise.all([devicesApi.get(selId), notesApi.list(selId)]);
+        if (!alive) return;
+        setSelectedDetail(fromApiDevice(dev, notesRes.notes.map(fromApiNote)));
+      } catch (e) {
+        if (!alive) return;
+        setSelectedDetail(null);
+        setToast({ bad: true, msg: describeApiError(e) });
+      }
+    })();
+    return () => { alive = false; };
+  }, [selId, refreshNonce]);
+
+  useEffect(() => {
+    if (IS_API || !loaded || !dirty.current) return;
     let alive = true;
     setSaving(true);
     const t = setTimeout(async () => {
@@ -783,6 +1055,7 @@ export default function DeviceIndex() {
   }, [modal, q]);
 
   const results = useMemo(() => {
+    if (IS_API) return devices;
     const needle = q.trim();
     const alnum = upper(needle.replace(/[^a-z0-9]/gi, ""));
     const dig = digits(needle);
@@ -810,7 +1083,7 @@ export default function DeviceIndex() {
     return list;
   }, [devices, q, fType, fStatus]);
 
-  const selected = devices.find((d) => d.id === selId) || null;
+  const selected = IS_API ? selectedDetail : (devices.find((d) => d.id === selId) || null);
 
   // A bare 15-digit string is an IMEI, an 18–20 digit string is an ICCID.
   const prefill = useMemo(() => {
@@ -825,6 +1098,13 @@ export default function DeviceIndex() {
 
   /* actions */
   const saveRecord = (rec) => {
+    if (IS_API) {
+      setSelId(rec.id);
+      setModal(null);
+      bumpRefresh();
+      setToast({ msg: "Saved." });
+      return;
+    }
     commit((prev) => {
       const i = prev.findIndex((d) => d.id === rec.id);
       if (i < 0) return [...prev, rec];
@@ -835,12 +1115,47 @@ export default function DeviceIndex() {
     setToast({ msg: `${rec.serial} saved.` });
   };
   const patch = (id, fn) => commit((prev) => prev.map((d) => (d.id === id ? { ...fn(d), updatedAt: new Date().toISOString() } : d)));
-  const removeDevice = (d) => {
+
+  const setStatusApi = async (id, status) => {
+    try {
+      await devicesApi.patch(id, { status });
+      setSelectedDetail((d) => (d ? { ...d, status } : d));
+      bumpRefresh();
+    } catch (e) {
+      setToast({ bad: true, msg: describeApiError(e) });
+    }
+  };
+
+  const onAddNoteLocal = ({ body, kind }) => {
+    const n = { id: uid("n"), body, kind, at: new Date().toISOString() };
+    patch(selected.id, (d) => ({ ...d, notes: [...(d.notes || []), n] }));
+    return Promise.resolve();
+  };
+  const onAddNoteApi = async ({ body, kind, acknowledgeAdvisory }) => {
+    const saved = await notesApi.add(selected.id, { body, kind: noteKindToApi(kind), acknowledgeAdvisory });
+    setSelectedDetail((d) => (d ? { ...d, notes: [fromApiNote(saved), ...(d.notes || [])] } : d));
+  };
+
+  const removeDeviceLocal = (d) => {
     commit((prev) => prev.filter((x) => x.id !== d.id));
     setSelId(null); setModal(null);
     setToast({ msg: `${d.serial} deleted.` });
   };
+  const removeDeviceApi = async (d) => {
+    if (deleteReason.trim().length < 8) return;
+    try {
+      await devicesApi.softDelete(d.id, deleteReason.trim());
+      setSelId(null); setModal(null); setDeleteReason("");
+      bumpRefresh();
+      setToast({ msg: `${d.serial} deleted.` });
+    } catch (e) {
+      setToast({ bad: true, msg: describeApiError(e) });
+    }
+  };
+  const removeDevice = (d) => (IS_API ? removeDeviceApi(d) : removeDeviceLocal(d));
+
   const doImport = (rows) => {
+    if (IS_API) return; // the Import control is disabled in this mode
     const now = new Date().toISOString();
     commit((prev) => {
       const next = [...prev];
@@ -898,7 +1213,21 @@ export default function DeviceIndex() {
     }
   };
 
+  const downloadCsvApi = async () => {
+    try {
+      const text = await devicesApi.exportCsv();
+      const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `device-register-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click(); URL.revokeObjectURL(a.href);
+    } catch (e) {
+      setToast({ bad: true, msg: describeApiError(e) });
+    }
+  };
+
   const wipeAll = async () => {
+    if (IS_API) return; // no bulk-delete capability, deliberately — see D4
     await store.wipe();
     dirty.current = false;
     setDevices([]); setSelId(null); setModal(null);
@@ -911,6 +1240,8 @@ export default function DeviceIndex() {
     return { byType, byStatus };
   }, [devices]);
 
+  const canRegister = roleCan("registerDevice", identity);
+
   return (
     <div className="app">
       <style>{CSS}</style>
@@ -922,8 +1253,10 @@ export default function DeviceIndex() {
             <span className="brand-s">central device register</span>
           </div>
           <div className="spacer" />
-          <span className="count mono">{devices.length} <em>records</em></span>
-          <button className="btn btn-solid btn-sm" onClick={() => setModal("add")}><Plus size={14} /> Add device</button>
+          <span className="count mono">{devices.length}{IS_API && hasMore ? "+" : ""} <em>records</em></span>
+          <button className="btn btn-solid btn-sm" disabled={!canRegister}
+            title={canRegister ? undefined : "Requires the warehouse or manager role"}
+            onClick={() => setModal("add")}><Plus size={14} /> Add device</button>
         </div>
         <div className="ruler" aria-hidden="true" />
         <div className="rule-strip">
@@ -931,6 +1264,12 @@ export default function DeviceIndex() {
           <span>Device data only — no names, contacts, addresses or any other individual data. There is no field for it, and free text is screened.</span>
         </div>
       </header>
+
+      {IS_API && globalError && (
+        <div className="banner banner-bad" style={{ margin: "10px 16px" }}>
+          <ShieldOff size={14} /> {globalError}
+        </div>
+      )}
 
       <div className="search-bar" ref={barRef}>
         <div className="search">
@@ -975,12 +1314,18 @@ export default function DeviceIndex() {
       <main className={`main ${selected ? "main-detail" : ""}`}>
         <section className="list" aria-label="Search results">
           <div className="list-hd">
-            <span className="lbl">{q || fType !== "all" || fStatus !== "all" ? `${results.length} matching` : "All devices"}</span>
+            <span className="lbl">
+              {q || fType !== "all" || fStatus !== "all"
+                ? `${results.length}${IS_API && hasMore ? "+" : ""} matching`
+                : IS_API ? `${results.length}${hasMore ? "+" : ""} devices` : "All devices"}
+            </span>
+            {IS_API && searchLoading && <Loader2 size={12} className="spin" style={{ marginLeft: 8 }} />}
           </div>
 
           {!loaded && <div className="pad muted"><Loader2 size={14} className="spin" /> Loading the index…</div>}
+          {IS_API && searchError && <div className="pad muted">{searchError}</div>}
 
-          {loaded && devices.length === 0 && (
+          {loaded && !IS_API && devices.length === 0 && (
             <div className="pad empty">
               <p className="empty-h">The index is empty.</p>
               <p className="muted">Add the first device, or paste a list you already have.</p>
@@ -991,11 +1336,23 @@ export default function DeviceIndex() {
             </div>
           )}
 
-          {loaded && devices.length > 0 && results.length === 0 && (
+          {loaded && !IS_API && devices.length > 0 && results.length === 0 && (
             <div className="pad empty">
               <p className="empty-h">Nothing matches {q ? <span className="mono">{q}</span> : "these filters"}.</p>
               <p className="muted">Check the digits, widen the filters, or record it as a new device.</p>
               {q && <button className="btn btn-ghost btn-sm" onClick={() => setModal("add")}><Plus size={14} /> Add {q.trim().slice(0, 24)}</button>}
+            </div>
+          )}
+
+          {loaded && IS_API && !searchLoading && results.length === 0 && !searchError && (
+            <div className="pad empty">
+              <p className="empty-h">
+                {q || fType !== "all" || fStatus !== "all" ? <>Nothing matches {q ? <span className="mono">{q}</span> : "these filters"}.</> : "No devices yet."}
+              </p>
+              <p className="muted">
+                {q || fType !== "all" || fStatus !== "all" ? "Check the digits, or widen the filters." : "Add the first device."}
+              </p>
+              {canRegister && <button className="btn btn-solid btn-sm" onClick={() => setModal("add")}><Plus size={14} /> Add device</button>}
             </div>
           )}
 
@@ -1017,56 +1374,86 @@ export default function DeviceIndex() {
                   </span>
                   <span className="row-r">
                     <StatusChip id={d.status} small />
-                    {(d.notes || []).length > 0 && <span className="nct mono">{(d.notes || []).length} note{(d.notes || []).length === 1 ? "" : "s"}</span>}
+                    {(IS_API ? d.noteCount : (d.notes || []).length) > 0 && (
+                      <span className="nct mono">{IS_API ? d.noteCount : d.notes.length} note{(IS_API ? d.noteCount : d.notes.length) === 1 ? "" : "s"}</span>
+                    )}
                   </span>
                 </button>
               </li>
             ))}
           </ul>
+
+          {IS_API && hasMore && (
+            <div className="pad">
+              <button className="btn btn-ghost btn-sm" disabled={searchLoading} onClick={loadMore}>
+                {searchLoading ? "Loading…" : "Load more"}
+              </button>
+            </div>
+          )}
         </section>
 
         <Detail
           device={selected}
           query={q}
+          identity={identity}
           onBack={() => setSelId(null)}
           onEdit={() => setModal("edit")}
           onDelete={() => setModal("delete")}
-          onStatus={(s) => patch(selected.id, (d) => ({ ...d, status: s }))}
-          onAddNote={(n) => patch(selected.id, (d) => ({ ...d, notes: [...(d.notes || []), n] }))}
+          onStatus={(s) => (IS_API ? setStatusApi(selected.id, s) : patch(selected.id, (d) => ({ ...d, status: s })))}
+          onAddNote={IS_API ? onAddNoteApi : onAddNoteLocal}
           onDeleteNote={(nid) => patch(selected.id, (d) => ({ ...d, notes: (d.notes || []).filter((x) => x.id !== nid) }))}
         />
       </main>
 
       <footer className="foot">
         <span className="foot-s mono">
-          {storeless ? "Storage unavailable — this session only" :
-            saving ? "Saving…" : savedAt ? `Saved ${fmtDate(savedAt)}` : "Saved to your private index"}
+          {IS_API
+            ? (identity ? `${identity.actor} · ${identity.role}` : globalError ? "Not connected" : "Connecting…")
+            : (storeless ? "Storage unavailable — this session only" :
+              saving ? "Saving…" : savedAt ? `Saved ${fmtDate(savedAt)}` : "Saved to your private index")}
         </span>
         <div className="spacer" />
-        <button className="btn btn-ghost btn-sm" onClick={() => setModal("import")}><Upload size={13} /> Import</button>
-        <button className="btn btn-ghost btn-sm" onClick={() => setModal("export")} disabled={!devices.length}><Download size={13} /> Export</button>
-        <button className="btn btn-ghost btn-sm btn-bad" onClick={() => setModal("reset")} disabled={!devices.length}><RotateCcw size={13} /> Clear</button>
+        <button className="btn btn-ghost btn-sm" disabled={IS_API}
+          title={IS_API ? "Bulk import isn't available through the API yet — see DEPLOYMENT-READINESS 1.8" : undefined}
+          onClick={() => setModal("import")}><Upload size={13} /> Import</button>
+        <button className="btn btn-ghost btn-sm" disabled={IS_API ? !roleCan("export", identity) : !devices.length}
+          title={IS_API && !roleCan("export", identity) ? "Requires the manager role" : undefined}
+          onClick={() => (IS_API ? downloadCsvApi() : setModal("export"))}><Download size={13} /> Export</button>
+        <button className="btn btn-ghost btn-sm btn-bad" disabled={IS_API || !devices.length}
+          title={IS_API ? "Not available against the API — devices are soft-deleted individually, with a reason" : undefined}
+          onClick={() => setModal("reset")}><RotateCcw size={13} /> Clear</button>
       </footer>
 
       {modal && (
         <div className="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}>
-          {modal === "add" && <RecordForm devices={devices} prefill={prefill} onSave={saveRecord} onCancel={() => setModal(null)} />}
-          {modal === "edit" && selected && <RecordForm initial={selected} devices={devices} onSave={saveRecord} onCancel={() => setModal(null)} />}
-          {modal === "import" && <ImportPane devices={devices} onCommit={doImport} onCancel={() => setModal(null)} />}
+          {modal === "add" && <RecordForm devices={devices} prefill={prefill} identity={identity} onSave={saveRecord} onCancel={() => setModal(null)} />}
+          {modal === "edit" && selected && <RecordForm initial={selected} devices={devices} identity={identity} onSave={saveRecord} onCancel={() => setModal(null)} />}
+          {modal === "import" && !IS_API && <ImportPane devices={devices} onCommit={doImport} onCancel={() => setModal(null)} />}
           {modal === "delete" && selected && (
             <div className="sheet sheet-sm" role="dialog" aria-modal="true">
               <div className="sheet-hd"><span className="lbl">Delete record</span>
-                <button className="icon-btn" onClick={() => setModal(null)} aria-label="Close"><X size={16} /></button></div>
+                <button className="icon-btn" onClick={() => { setModal(null); setDeleteReason(""); }} aria-label="Close"><X size={16} /></button></div>
               <div className="sheet-bd">
-                <p>Deleting <b className="mono">{selected.serial}</b> removes its {(selected.notes || []).length} note{(selected.notes || []).length === 1 ? "" : "s"} as well. This cannot be undone.</p>
+                {IS_API ? (
+                  <>
+                    <p>Deleting <b className="mono">{selected.serial}</b> marks it removed from the active index. The record and its notes are retained for audit — nothing is erased.</p>
+                    <Field label="Reason" hint="at least 8 characters, kept with the audit record">
+                      <textarea className="in ta" rows={2} value={deleteReason}
+                        onChange={(e) => setDeleteReason(e.target.value)}
+                        placeholder="e.g. duplicate registration, scrapped beyond repair" />
+                    </Field>
+                  </>
+                ) : (
+                  <p>Deleting <b className="mono">{selected.serial}</b> removes its {(selected.notes || []).length} note{(selected.notes || []).length === 1 ? "" : "s"} as well. This cannot be undone.</p>
+                )}
               </div>
               <div className="sheet-ft">
-                <button className="btn btn-ghost" onClick={() => setModal(null)}>Keep record</button>
-                <button className="btn btn-bad-solid" onClick={() => removeDevice(selected)}>Delete record</button>
+                <button className="btn btn-ghost" onClick={() => { setModal(null); setDeleteReason(""); }}>Keep record</button>
+                <button className="btn btn-bad-solid" disabled={IS_API && deleteReason.trim().length < 8} onClick={() => removeDevice(selected)}>Delete record</button>
               </div>
             </div>
           )}
-          {modal === "export" && (
+          {modal === "export" && !IS_API && (
             <div className="sheet" role="dialog" aria-modal="true">
               <div className="sheet-hd"><span className="lbl">Export {devices.length} records</span>
                 <button className="icon-btn" onClick={() => setModal(null)} aria-label="Close"><X size={16} /></button></div>
@@ -1080,7 +1467,7 @@ export default function DeviceIndex() {
               </div>
             </div>
           )}
-          {modal === "reset" && (
+          {modal === "reset" && !IS_API && (
             <div className="sheet sheet-sm" role="dialog" aria-modal="true">
               <div className="sheet-hd"><span className="lbl">Clear the index</span>
                 <button className="icon-btn" onClick={() => setModal(null)} aria-label="Close"><X size={16} /></button></div>
@@ -1280,6 +1667,8 @@ const CSS = `
 .icon-btn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px;
   background:transparent; border:0; border-radius:2px; color:var(--steel); flex:none;}
 .icon-btn:hover{background:#E9ECE6; color:var(--ink);}
+.icon-btn:disabled{opacity:.35; cursor:not-allowed;}
+.icon-btn:disabled:hover{background:transparent; color:var(--steel);}
 .icon-bad:hover{background:var(--rust-t); color:var(--rust);}
 .icon-xs{width:22px; height:22px;}
 .app :focus-visible{outline:2px solid var(--oxide); outline-offset:1px;}
@@ -1291,6 +1680,7 @@ const CSS = `
 .chip-sm{font-size:9.5px; padding:4px 8px;}
 .chip:hover{border-color:var(--steel);}
 .chip-on{background:var(--oxide); border-color:var(--oxide); color:#fff;}
+.chip:disabled{opacity:.4; cursor:not-allowed;}
 
 .fld{display:block; margin-bottom:15px;}
 .fld-l{display:flex; align-items:baseline; gap:7px; margin-bottom:5px;
@@ -1300,6 +1690,7 @@ const CSS = `
   font-size:15px; color:var(--ink); outline:0;}
 .in:focus{border-color:var(--oxide); box-shadow:0 0 0 2px var(--oxide-t);}
 .in.mono{letter-spacing:.05em;}
+.in:disabled,.in[readonly]{background:#F0F1EE; color:var(--steel);}
 .ta{font-size:14px; line-height:1.45; resize:vertical; font-family:var(--sans);}
 .ta.mono{font-family:var(--mono); font-size:12.5px;}
 .row2{display:grid; grid-template-columns:1fr; gap:0;}
