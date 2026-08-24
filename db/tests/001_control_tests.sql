@@ -23,11 +23,15 @@ BEGIN
 END $$;
 
 -- ── Idempotent reset of this suite's own fixtures only ─────────────────────
+--  T-* is this suite's own prefix; TEST-* is the seed script's (db/seed/
+--  test_devices.sql) and this suite's own §8 fixture for
+--  registry.assert_no_test_data(). They don't collide -- 'T-%' requires a
+--  literal '-' as the second character, which 'TEST-%' does not have.
 DELETE FROM registry.device_notes
-  WHERE device_id IN (SELECT id FROM registry.devices WHERE serial LIKE 'T-%');
+  WHERE device_id IN (SELECT id FROM registry.devices WHERE serial LIKE 'T-%' OR serial LIKE 'TEST-%');
 DELETE FROM registry.device_status_history
-  WHERE device_id IN (SELECT id FROM registry.devices WHERE serial LIKE 'T-%');
-DELETE FROM registry.devices WHERE serial LIKE 'T-%';
+  WHERE device_id IN (SELECT id FROM registry.devices WHERE serial LIKE 'T-%' OR serial LIKE 'TEST-%');
+DELETE FROM registry.devices WHERE serial LIKE 'T-%' OR serial LIKE 'TEST-%';
 
 CREATE TEMP TABLE _results (
   seq     serial PRIMARY KEY,
@@ -296,6 +300,26 @@ SELECT pg_temp.expect('data minimisation', 'no id-number style column',
 SELECT pg_temp.note('data minimisation', 'registry columns present',
   (SELECT count(*)::text || ' columns across ' || count(DISTINCT table_name)::text || ' relations'
    FROM information_schema.columns WHERE table_schema = 'registry'));
+
+-- ── 8. Test data guard (migration 005) ─────────────────────────────────────
+--  A synthetic IMEI with a correct check digit is indistinguishable from a
+--  real one by inspection, so this has to be a structural check the deploy
+--  pipeline can call, not a human remembering to look.
+SELECT pg_temp.expect('test data guard', 'clean database passes',
+  $$SELECT registry.assert_no_test_data()$$, false);
+SELECT pg_temp.expect('test data guard', 'fixture: TEST-* device inserted',
+  $$INSERT INTO devices (serial,device_type) VALUES ('TEST-GUARD-0001','loop')$$, false);
+SELECT pg_temp.expect('test data guard', 'a single TEST-* row is caught',
+  $$SELECT registry.assert_no_test_data()$$, true);
+SELECT pg_temp.expect('test data guard', 'fixture: TEST-* device soft-deleted',
+  $$UPDATE devices SET deleted_at=now(), deleted_by='controltests@ci',
+      delete_reason='control test cleanup' WHERE serial='TEST-GUARD-0001'$$, false);
+SELECT pg_temp.expect('test data guard', 'a soft-deleted TEST-* row is still caught',
+  $$SELECT registry.assert_no_test_data()$$, true);
+SELECT pg_temp.expect('test data guard', 'fixture: TEST-* device removed',
+  $$DELETE FROM devices WHERE serial='TEST-GUARD-0001'$$, false);
+SELECT pg_temp.expect('test data guard', 'guard clears once the row is gone',
+  $$SELECT registry.assert_no_test_data()$$, false);
 
 -- ── Report ─────────────────────────────────────────────────────────────────
 \echo ''

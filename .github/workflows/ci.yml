@@ -102,6 +102,35 @@ jobs:
           fi
           echo "confirmed: guard holds"
 
+      - name: Seed test devices
+        env:
+          PGOPTIONS: "-c registry.seed_mode=on"
+        run: psql -v ON_ERROR_STOP=1 -f db/seed/test_devices.sql
+
+      - name: Seed script refuses to run twice
+        env:
+          PGOPTIONS: "-c registry.seed_mode=on"
+        run: |
+          if psql -v ON_ERROR_STOP=1 -q -f db/seed/test_devices.sql >/dev/null 2>&1; then
+            echo "::error::seed script ran again against an already-seeded database"
+            exit 1
+          fi
+          echo "confirmed: guard holds"
+
+      - name: assert_no_test_data raises with seed data present
+        run: |
+          if psql -v ON_ERROR_STOP=1 -q -c "SELECT registry.assert_no_test_data()" >/dev/null 2>&1; then
+            echo "::error::assert_no_test_data() did not catch the seeded TEST-* devices"
+            exit 1
+          fi
+          echo "confirmed: the guard catches seed data"
+
+      - name: Remove seeded test devices and re-check the guard
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -c "DELETE FROM registry.devices WHERE serial_norm LIKE 'TEST%'"
+          psql -v ON_ERROR_STOP=1 -q -c "SELECT registry.assert_no_test_data()"
+          echo "confirmed: the guard passes once seed data is gone"
+
   # ═══════════════════════════════════════════════════════════════════════
   #  API. Runs against a real database on purpose: authorisation is enforced
   #  by Postgres grants, so a mocked database would test nothing but the mock.
@@ -172,6 +201,32 @@ jobs:
             exit 1
           fi
           echo "confirmed: refuses to start"
+      - name: Preflight refuses to pass with placeholder config
+        working-directory: api
+        env:
+          NODE_ENV: production
+          AUTH_MODE: oidc
+        run: |
+          # Everything below is unset or still the shipped placeholder.
+          # Preflight must exit 78, not start anyway.
+          node ../deploy/preflight.mjs; code=$?
+          if [ "$code" -ne 78 ]; then
+            echo "::error::preflight exited $code against placeholder config, expected 78"
+            exit 1
+          fi
+          echo "confirmed: preflight refuses placeholder config"
+      - name: Preflight passes with real-looking config
+        working-directory: api
+        env:
+          NODE_ENV: production
+          AUTH_MODE: oidc
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/registry_ci
+          PGPASSWORD: not-the-shipped-placeholder
+          OIDC_JWKS_URI: https://idp.example/.well-known/jwks.json
+          OIDC_ISSUER: https://idp.example
+          OIDC_AUDIENCE: device-registry
+          AUTH_ROLE_MAP: '{"real-managers":"manager","real-warehouse":"warehouse","real-technicians":"technician","real-readonly":"readonly"}'
+        run: node ../deploy/preflight.mjs
       - name: App role must hold no privilege of its own
         env:
           PGUSER: registry_app

@@ -71,6 +71,21 @@ schema-and-controls:
         echo "control suite ran without the test_mode guard"; exit 1
       fi
       echo "confirmed: guard holds"
+    - PGOPTIONS="-c registry.seed_mode=on" psql -v ON_ERROR_STOP=1 -f db/seed/test_devices.sql
+    - |
+      # The seed script must refuse to run twice against an already-seeded target.
+      if PGOPTIONS="-c registry.seed_mode=on" psql -v ON_ERROR_STOP=1 -q -f db/seed/test_devices.sql >/dev/null 2>&1; then
+        echo "seed script ran again against an already-seeded database"; exit 1
+      fi
+      echo "confirmed: guard holds"
+    - |
+      # registry.assert_no_test_data() must catch the seeded TEST-* devices.
+      if psql -v ON_ERROR_STOP=1 -q -c "SELECT registry.assert_no_test_data()" >/dev/null 2>&1; then
+        echo "assert_no_test_data() did not catch the seeded TEST-* devices"; exit 1
+      fi
+      echo "confirmed: the guard catches seed data"
+    - psql -v ON_ERROR_STOP=1 -q -c "DELETE FROM registry.devices WHERE serial_norm LIKE 'TEST%'"
+    - psql -v ON_ERROR_STOP=1 -q -c "SELECT registry.assert_no_test_data()"
 
 # ═══════════════════════════════════════════════════════════════════════
 #  API. Runs against a real database on purpose: authorisation is enforced
@@ -104,6 +119,23 @@ api:
         echo "the API started with AUTH_MODE=dev in production"; exit 1
       fi
       echo "confirmed: refuses to start"
+    - |
+      # Everything below is unset or still the shipped placeholder.
+      # Preflight must exit 78, not start anyway.
+      NODE_ENV=production AUTH_MODE=oidc node ../deploy/preflight.mjs; code=$?
+      if [ "$code" -ne 78 ]; then
+        echo "preflight exited $code against placeholder config, expected 78"; exit 1
+      fi
+      echo "confirmed: preflight refuses placeholder config"
+    - |
+      NODE_ENV=production AUTH_MODE=oidc \
+      DATABASE_URL="postgresql://ci:ci@${PGHOST}:5432/registry_ci" \
+      PGPASSWORD=not-the-shipped-placeholder \
+      OIDC_JWKS_URI=https://idp.example/.well-known/jwks.json \
+      OIDC_ISSUER=https://idp.example \
+      OIDC_AUDIENCE=device-registry \
+      AUTH_ROLE_MAP='{"real-managers":"manager","real-warehouse":"warehouse","real-technicians":"technician","real-readonly":"readonly"}' \
+      node ../deploy/preflight.mjs
     - |
       # NOINHERIT is what makes a forgotten SET LOCAL ROLE fail closed
       # rather than run with the union of every role's privileges.
