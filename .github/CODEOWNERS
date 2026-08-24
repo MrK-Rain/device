@@ -1,17 +1,17 @@
 # Every path needs an owner before branch protection can require review.
-# Replace the placeholders with real rain teams — CODEOWNERS silently does
+# Replace the placeholders with real rian teams — CODEOWNERS silently does
 # nothing if a team does not exist or lacks write access to this repository.
 
-# TODO(rain): set the default owning team
-*                       @rain/PLACEHOLDER-platform
+# TODO(rian): set the default owning team
+*                       @rian/PLACEHOLDER-platform
 
 # Schema changes alter the system of record. Require a DBA.
-/db/migrations/         @rain/PLACEHOLDER-platform @rain/PLACEHOLDER-dba
+/db/migrations/         @rian/PLACEHOLDER-platform @rian/PLACEHOLDER-dba
 
 # The control tests are the compliance evidence. Changing them changes what
 # the build is allowed to let through.
-/db/tests/              @rain/PLACEHOLDER-dba @rain/PLACEHOLDER-security
+/db/tests/              @rian/PLACEHOLDER-dba @rian/PLACEHOLDER-security
 
 # CI defines the gates. Security reviews changes to the gates themselves.
-/.github/workflows/     @rain/PLACEHOLDER-security
-/.gitlab-ci.yml         @rain/PLACEHOLDER-security
+/.github/workflows/     @rian/PLACEHOLDER-security
+/.gitlab-ci.yml         @rian/PLACEHOLDER-security

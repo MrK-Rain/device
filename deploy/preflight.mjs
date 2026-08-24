@@ -38,7 +38,7 @@ function checkRoleMap(env, failures) {
     if (Object.keys(parsed).includes(placeholderGroup)) {
       failures.push({
         name: "AUTH_ROLE_MAP",
-        reason: `still maps the placeholder group '${placeholderGroup}' (${role}) — replace with rain's real directory group`,
+        reason: `still maps the placeholder group '${placeholderGroup}' (${role}) — replace with rian's real directory group`,
       });
     }
   }

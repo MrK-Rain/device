@@ -1,12 +1,12 @@
 # Deployment readiness
 
-What stands between the current repository and a system rain can run in
+What stands between the current repository and a system rian can run in
 production. Ordered by what stops you, not by effort.
 
 Severity: **P0** blocks go-live · **P1** needed within the first weeks ·
 **P2** should be scheduled
 
-Owner column: **rain** means nobody outside your organisation can supply it.
+Owner column: **rian** means nobody outside your organisation can supply it.
 
 ---
 
@@ -15,27 +15,27 @@ Owner column: **rain** means nobody outside your organisation can supply it.
 | # | Item | Sev | Owner | Notes |
 |---|---|---|---|---|
 | 1.1 | ~~Wire the frontend to the API~~ | P0 | eng | **Done.** `web/src/api-client.js` talks to the real endpoints; `device-index.jsx` searches, creates, edits, deletes and adds notes against the server when `VITE_STORAGE_BACKEND=api`, gated by the caller's role from `/api/meta`. Bulk import, per-note deletion and "clear everything" are disabled in this mode rather than faked, because the API has none of those (1.8, D4). Still open: there is no login UI, so it authenticates with a static bearer token from `VITE_API_TOKEN` — see 1.6 and `.env.example`. That token is a real interim gap, not a placeholder to ignore. |
-| 1.2 | **A database to deploy to** | P0 | rain + eng | No cluster exists. Hosting was asked and not yet answered, and it gates items 3.x entirely. |
+| 1.2 | **A database to deploy to** | P0 | rian + eng | No cluster exists. Hosting was asked and not yet answered, and it gates items 3.x entirely. |
 | 1.3 | **`initdb --data-checksums`** | P0 | DBA | Cannot be enabled later without rebuilding the cluster. Miss it at creation and you carry it forever. |
-| 1.4 | **Secret delivery** | P0 | rain + eng | The app reads `PGPASSWORD` from the environment. Nothing decides how it gets there. Prefer IAM or certificate auth over a password. |
+| 1.4 | **Secret delivery** | P0 | rian + eng | The app reads `PGPASSWORD` from the environment. Nothing decides how it gets there. Prefer IAM or certificate auth over a password. |
 | 1.5 | **TLS end to end** | P0 | eng | `pg_hba.conf` must be `hostssl` only, and `PGSSLMODE=verify-full`. `require` encrypts but authenticates nothing, so it will talk happily to an impostor. |
-| 1.6 | **IdP configuration** | P0 | rain | `OIDC_JWKS_URI`, `OIDC_ISSUER`, `OIDC_AUDIENCE`, and the real directory group names for `AUTH_ROLE_MAP`. The values shipped are placeholders and match nothing. |
+| 1.6 | **IdP configuration** | P0 | rian | `OIDC_JWKS_URI`, `OIDC_ISSUER`, `OIDC_AUDIENCE`, and the real directory group names for `AUTH_ROLE_MAP`. The values shipped are placeholders and match nothing. |
 | 1.7 | **Schedule audit partition rotation** | P0 | DBA | `registry.audit()` runs inside every read and write, so exhausted partitions stop the whole register. Migration 004 gives 13 months of runway and a default partition as a net, but the job is still required. Run daily, not monthly: `SELECT registry.ensure_audit_partitions_ahead(3)`. Alert when `v_audit_partition_health.months_headroom < 2` or `rows_in_default > 0`. |
 | 1.8 | **Bulk import path** | P0 | eng | Device data "will be provided later" and a million rows cannot come through the API. Needs `COPY` into a staging table, validation against the same rules, and a reconciliation report of what was rejected and why. |
 
 ---
 
-## 2. Decisions and inputs only rain can supply
+## 2. Decisions and inputs only rian can supply
 
 | # | Item | Sev | Notes |
 |---|---|---|---|
-| 2.1 | **Security policy documents** | P0 | Compliance has not been assessed and cannot be. Everything built reflects general good practice; whether it meets rain's standard is unanswered. |
-| 2.2 | **POPIA determination** | P0 | Is a register of ICCIDs and IMEIs personal information, given rain can join them to subscribers? This changes retention, access logging and breach obligations. Needs the privacy office, not an engineer. |
+| 2.1 | **Security policy documents** | P0 | Compliance has not been assessed and cannot be. Everything built reflects general good practice; whether it meets rian's standard is unanswered. |
+| 2.2 | **POPIA determination** | P0 | Is a register of ICCIDs and IMEIs personal information, given rian can join them to subscribers? This changes retention, access logging and breach obligations. Needs the privacy office, not an engineer. |
 | 2.3 | **Retention periods** | P1 | `drop_audit_partitions_before()` exists and is deliberately unscheduled. How long do audit rows, notes and soft-deleted devices live? |
 | 2.4 | **Hosting target** | P0 | AWS, Azure, on-prem. Blocks all infrastructure work. |
 | 2.5 | **Named service owner and on-call rota** | P0 | Who is paged at 03:00. |
 | 2.6 | **Branch protection** | P0 | Workflows and CODEOWNERS do nothing until enabled in repository settings. List is in the main README. |
-| 2.7 | **Replace CODEOWNERS placeholders** | P0 | `@rain/PLACEHOLDER-*`. CODEOWNERS fails silently if a team does not exist or lacks write access. |
+| 2.7 | **Replace CODEOWNERS placeholders** | P0 | `@rian/PLACEHOLDER-*`. CODEOWNERS fails silently if a team does not exist or lacks write access. |
 | 2.8 | **Vulnerability disclosure route** | P1 | `SECURITY.md` has a marked TODO. A reporter who cannot find a channel usually picks a public one. |
 | 2.9 | **Depot offline behaviour** | P1 | A bench that loses the WAN cannot look anything up. Accept it, or fund a depot-local read replica. |
 | 2.10 | **Change management for production DDL** | P1 | Who approves a migration reaching production, and how that approval is recorded. |

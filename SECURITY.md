@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-> **TODO(rain):** replace this section with rain's actual disclosure route
+> **TODO(rian):** replace this section with rian's actual disclosure route
 > before the repository is shared beyond the immediate team. Do not leave a
 > placeholder here — a reporter who cannot find a channel usually picks a
 > public one.
@@ -19,11 +19,11 @@ status, and repair notes. No names, contacts, addresses or account
 identifiers.
 
 **This does not automatically place the register outside POPIA.** An ICCID or
-IMEI is device data in isolation, but rain can join it to a subscriber through
+IMEI is device data in isolation, but rian can join it to a subscriber through
 its own systems, and data is generally treated as personal where the holder
 can re-identify it. The controls that carry that load are access control,
 the audit trail and retention limits — not the absence of a name column.
-This needs a determination from rain's privacy office; it has not been made.
+This needs a determination from rian's privacy office; it has not been made.
 
 ## Controls implemented
 

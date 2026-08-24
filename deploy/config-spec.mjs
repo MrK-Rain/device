@@ -12,7 +12,7 @@
  */
 
 // The four directory group names AUTH_ROLE_MAP ships with. Real values only
-// rain can supply (DEPLOYMENT-READINESS.md 1.6) — these exist so preflight
+// rian can supply (DEPLOYMENT-READINESS.md 1.6) — these exist so preflight
 // can tell whether they were ever replaced.
 export const REQUIRED_GROUPS = {
   manager: "device-registry-managers",
@@ -38,7 +38,7 @@ export const SPEC = [
   {
     name: "DATABASE_URL",
     required: true,
-    note: "1.2/1.4 (rain + eng) — the real cluster and how its credential reaches this process",
+    note: "1.2/1.4 (rian + eng) — the real cluster and how its credential reaches this process",
   },
   { name: "PGHOST", default: "localhost" },
   { name: "PGPORT", default: "5432" },
@@ -48,7 +48,7 @@ export const SPEC = [
     name: "PGPASSWORD",
     required: true,
     placeholder: "changeme",
-    note: "1.4 (rain + eng) — prefer IAM/certificate auth over a password",
+    note: "1.4 (rian + eng) — prefer IAM/certificate auth over a password",
   },
   { name: "PG_POOL_MAX", default: "10" },
   { name: "PG_IDLE_TIMEOUT_MS", default: "30000" },
@@ -60,27 +60,27 @@ export const SPEC = [
     note: "1.5 — must stay verify-full; 'require' encrypts but authenticates nothing",
   },
 
-  // ── Auth (1.6: rain's IdP configuration) ───────────────────────────────
+  // ── Auth (1.6: rian's IdP configuration) ───────────────────────────────
   {
     name: "OIDC_JWKS_URI",
     required: true,
     requiredWhen: (env) => (env.AUTH_MODE || "oidc") !== "dev",
     placeholder: "https://REPLACE-ME.example/.well-known/jwks.json",
-    note: "1.6 (rain) — from rain's IdP",
+    note: "1.6 (rian) — from rian's IdP",
   },
   {
     name: "OIDC_ISSUER",
     required: true,
     requiredWhen: (env) => (env.AUTH_MODE || "oidc") !== "dev",
     placeholder: "https://REPLACE-ME.example/issuer",
-    note: "1.6 (rain)",
+    note: "1.6 (rian)",
   },
   {
     name: "OIDC_AUDIENCE",
     required: true,
     requiredWhen: (env) => (env.AUTH_MODE || "oidc") !== "dev",
     placeholder: "REPLACE-ME-audience",
-    note: "1.6 (rain)",
+    note: "1.6 (rian)",
   },
   { name: "OIDC_GROUPS_CLAIM", default: "groups" },
   { name: "OIDC_SUBJECT_CLAIM", default: "preferred_username" },
@@ -88,7 +88,7 @@ export const SPEC = [
   {
     name: "AUTH_ROLE_MAP",
     default: JSON.stringify(DEFAULT_ROLE_MAP),
-    note: "1.6 (rain) — the 4 directory group names inside must be real, checked individually below",
+    note: "1.6 (rian) — the 4 directory group names inside must be real, checked individually below",
   },
 
   // ── Rate limiting / proxy trust ─────────────────────────────────────────

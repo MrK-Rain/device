@@ -10,12 +10,12 @@
  * layer. Talking to it directly, one action at a time, is simpler and closer
  * to what the API actually guarantees.
  *
- * Auth: there is no login flow here yet. Real auth is OIDC against rain's
+ * Auth: there is no login flow here yet. Real auth is OIDC against rian's
  * IdP (DEPLOYMENT-READINESS 1.6), which is not configured. Until then this
  * reads a pre-issued bearer token from VITE_API_TOKEN — in AUTH_MODE=dev
  * that's a token registered with `registerDevToken`; in a real deployment
  * it would be a token obtained out of band. Do not build a password form
- * against this — D2 in api/README.md is explicit that rain's IdP is the only
+ * against this — D2 in api/README.md is explicit that rian's IdP is the only
  * source of identity.
  */
 

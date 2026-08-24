@@ -39,7 +39,7 @@ END $$;
 BEGIN;
 
 SET LOCAL search_path = registry, public;
-SET LOCAL registry.actor = 'seed-script@rain.co.za';
+SET LOCAL registry.actor = 'seed-script@rian.co.za';
 SET LOCAL registry.actor_role = 'manager';
 
 -- ── Ten devices, every type and every status at least once ─────────────────

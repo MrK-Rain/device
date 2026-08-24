@@ -81,7 +81,7 @@ export const config = {
     roleMap: JSON.parse(
       optional(
         "AUTH_ROLE_MAP",
-        // Placeholder group names. Replace with rain's actual directory
+        // Placeholder group names. Replace with rian's actual directory
         // groups; nothing here should be assumed to match anything real.
         JSON.stringify({
           "device-registry-managers": "manager",

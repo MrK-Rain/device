@@ -267,7 +267,7 @@ describe("personal data screening", () => {
 
   test("an email address is refused outright", async () => {
     const r = await call("tok-tech", "POST", `/api/devices/${id}/notes`, {
-      body: "Escalated to someone@rain.co.za for parts",
+      body: "Escalated to someone@rian.co.za for parts",
     });
     assert.equal(r.statusCode, 422);
     assert.equal(r.json().detail?.reason, "personal_data");
@@ -376,7 +376,7 @@ describe("audit trail", () => {
   });
 
   test("a search that looks like personal data is redacted before it is stored", async () => {
-    await call("tok-mgr", "GET", `/api/devices?q=${encodeURIComponent("someone@rain.co.za")}`);
+    await call("tok-mgr", "GET", `/api/devices?q=${encodeURIComponent("someone@rian.co.za")}`);
     const rows = await asManager(async (c) =>
       (
         await c.query(
@@ -387,7 +387,7 @@ describe("audit trail", () => {
       ).rows
     );
     assert.match(rows[0].q, /redacted/);
-    assert.ok(!rows[0].q.includes("rain.co.za"));
+    assert.ok(!rows[0].q.includes("rian.co.za"));
   });
 
   test("an export is recorded with the row count", async () => {

@@ -155,4 +155,4 @@ Stated plainly so nobody reads the numbers above as broader assurance.
 - **Penetration test and threat model.** Neither has been done.
 - **Accessibility.** The UI has never been audited.
 - **Real hardware.** No test on a Pi, a bench screen, or a barcode scanner.
-- **Anything about rain's security policies.** Not provided, not assessed.
+- **Anything about rian's security policies.** Not provided, not assessed.

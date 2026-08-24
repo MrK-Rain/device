@@ -13,7 +13,7 @@
  *         and config.js refuses to start in this mode under NODE_ENV=production.
  *
  * Deliberately not implemented: any notion of a local user store, password
- * handling, or session issuance. rain has an identity provider; a second
+ * handling, or session issuance. rian has an identity provider; a second
  * source of truth for who works there would be a liability, not a feature.
  */
 

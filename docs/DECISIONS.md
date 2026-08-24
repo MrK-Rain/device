@@ -126,7 +126,7 @@ absence of a field is what makes the category impossible.
 
 ## D8 — This does not automatically place the register outside POPIA
 
-An ICCID or IMEI is device data in isolation. rain can join it to a subscriber
+An ICCID or IMEI is device data in isolation. rian can join it to a subscriber
 through its own systems, and data is generally treated as personal where the
 holder can re-identify it.
 
@@ -276,7 +276,7 @@ chances a year to be silently broken.
 
 ---
 
-## D20 — Compliance with rain's security policies is not claimed
+## D20 — Compliance with rian's security policies is not claimed
 
 The policy documents were not provided, so no assessment was made and none is
 implied. What is implemented reflects general good practice: least privilege,
@@ -290,7 +290,7 @@ dangerous than one marked "pending review", because it gets signed off.**
 
 ## D21 — Four blues, one job each
 
-**Built:** a rain-inspired blue/silver palette for `.app`, replacing the
+**Built:** a rian-inspired blue/silver palette for `.app`, replacing the
 oxide-green brand system: `--blue` (header background, primary buttons,
 brand mark), `--blue-link` (hyperlinks and interactive icon accents),
 `--blue-focus` (the `:focus-visible` outline, nothing else), and
@@ -304,7 +304,7 @@ invisible against link-colored text, and reusing the header blue for
 Each blue clears the WCAG AA floor for its own job — 4.5:1 for text,
 3:1 for the non-text focus ring — against this app's actual backgrounds.
 
-**Not sourced from rain.co.za's live CSS:** a fetch attempt returned only
+**Not sourced from rian.co.za's live CSS:** a fetch attempt returned only
 stripped markdown, no usable hex values, so these are independently
 chosen, AA-verified blues, not an extraction of the real brand. **If a
 real brand palette shows up later, swap these four values — don't add a

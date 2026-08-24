@@ -20,7 +20,7 @@ has been added.
 | API layer (`api/`) | **Tested.** 35 integration tests against a real database, all roles exercised. Authorisation enforced by Postgres grants. |
 | Frontend (`web/`) | **Prototype only.** Builds and lints, but still talks to browser storage rather than the API. |
 | HA / backup / DR | **Not built.** Requirements documented below; no infrastructure code yet. |
-| Compliance mapping | **Blocked.** Needs rain's security policy documents. |
+| Compliance mapping | **Blocked.** Needs rian's security policy documents. |
 
 The frontend is a working UI specification, not the platform. It holds every
 record in memory and writes to a single browser storage key with a ~5MB
@@ -262,9 +262,9 @@ The frontend is not yet wired to the API — `web/src/storage-adapter.js` has
 the seam, and its `api` backend throws rather than pretending. That is the
 next piece of work, and it is small.
 
-Compliance with rain's security policies **has not been assessed**, because
+Compliance with rian's security policies **has not been assessed**, because
 the policy documents have not been provided. What is implemented reflects
 general good practice: least privilege by role, attributed writes, an
 append-only audit log, data minimisation asserted in CI. Whether that meets
-rain's standard is a separate question that needs the actual documents and a
+rian's standard is a separate question that needs the actual documents and a
 named reviewer.

@@ -115,7 +115,7 @@ SELECT pg_temp.note('identifiers', 'Luhn advisory flags recorded',
 -- ── 2. Personal-data screening, server side ────────────────────────────────
 SELECT pg_temp.expect('personal data', 'note containing an email refused',
   $$INSERT INTO device_notes (device_id,body)
-    SELECT id,'Escalated to tech@rain.co.za for parts' FROM devices WHERE serial='T-OK-001'$$, true);
+    SELECT id,'Escalated to tech@rian.co.za for parts' FROM devices WHERE serial='T-OK-001'$$, true);
 SELECT pg_temp.expect('personal data', 'note containing a SA mobile number refused',
   $$INSERT INTO device_notes (device_id,body)
     SELECT id,'Called 082 555 1234 to arrange the swap' FROM devices WHERE serial='T-OK-001'$$, true);

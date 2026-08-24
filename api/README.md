@@ -13,7 +13,7 @@ a transaction that assumes the caller's role:
 
 ```sql
 SET LOCAL ROLE registry_technician;
-SET LOCAL registry.actor      = 'someone@rain';
+SET LOCAL registry.actor      = 'someone@rian';
 SET LOCAL registry.actor_role = 'technician';
 ```
 
@@ -46,7 +46,7 @@ export AUTH_MODE=oidc
 export OIDC_JWKS_URI=https://idp.example/.well-known/jwks.json
 export OIDC_ISSUER=https://idp.example/
 export OIDC_AUDIENCE=device-registry
-export AUTH_ROLE_MAP='{"rain-device-managers":"manager", ...}'
+export AUTH_ROLE_MAP='{"rian-device-managers":"manager", ...}'
 
 npm start
 ```
