@@ -17,7 +17,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }   # full history: a secret in an old commit still leaked
       - uses: gitleaks/gitleaks-action@v2
         env:
@@ -34,7 +34,7 @@ jobs:
       run:
         working-directory: ${{ matrix.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -51,7 +51,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript
@@ -63,7 +63,7 @@ jobs:
     name: schema hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Migrations must not contain credentials
         run: |
           hits=$(grep -nEi "(password|secret|api[_-]?key)[[:space:]]*(=|:)[[:space:]]*['\"][^'\"]+" db/migrations/*.sql || true)
